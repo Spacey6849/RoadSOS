@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useLanguage } from '@/lib/i18n/LanguageProvider';
 import { createClient } from '@/lib/supabase/client';
-import type { Incident, Responder } from '@/lib/types';
+import type { Incident, Responder, CrashLog } from '@/lib/types';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const MapWithNoSSR = dynamic(() => import('@/components/ResponderMap'), {
@@ -115,9 +115,12 @@ export default function DashboardPage() {
   const [showMarkers, setShowMarkers] = useState(true);
   const [showHeat, setShowHeat] = useState(false);
   const [heatPoints, setHeatPoints] = useState<[number, number][]>([]);
+  const [crashLogs, setCrashLogs] = useState<CrashLog[]>([]);
+  const [showCrashes, setShowCrashes] = useState(true);
   const seenIds = useRef<Set<string>>(new Set());
   const channelRef = useRef<any>(null);
   const responderChannelRef = useRef<any>(null);
+  const crashChannelRef = useRef<any>(null);
   const supabaseRef = useRef<any>(null);
 
   useEffect(() => {
@@ -143,6 +146,15 @@ export default function DashboardPage() {
         }
       } catch {} finally { setLoading(false); }
 
+      try {
+        const { data: crashData } = await supabase
+          .from('crash_logs')
+          .select('id,detected_at,device_platform,mode,sensitivity,g_force,jerk_gs,latitude,longitude,address,outcome,resolved,resolved_at')
+          .order('detected_at', { ascending: false })
+          .limit(50);
+        if (crashData) setCrashLogs(crashData.map(mapCrashLog));
+      } catch {}
+
       channelRef.current = supabase.channel('incidents-web')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'incidents' }, (payload: any) => {
           const inc = mapIncident(payload.new);
@@ -164,11 +176,23 @@ export default function DashboardPage() {
             return [...prev, { id: payload.responderId, name: payload.name || 'Responder', lat: payload.lat, lng: payload.lng, type: payload.responderType || 'ambulance', updatedAt: Date.now() }];
           });
         }).subscribe();
+
+      // Crash logs — live INSERT (new crash) + UPDATE (resolve flips marker green)
+      crashChannelRef.current = supabase.channel('crash-logs-web')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'crash_logs' }, (payload: any) => {
+          const c = mapCrashLog(payload.new);
+          setCrashLogs(prev => [c, ...prev.filter(x => x.id !== c.id)].slice(0, 50));
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'crash_logs' }, (payload: any) => {
+          const c = mapCrashLog(payload.new);
+          setCrashLogs(prev => prev.map(x => (x.id === c.id ? c : x)));
+        }).subscribe();
     }
     init();
     return () => {
       if (channelRef.current) supabaseRef.current?.removeChannel(channelRef.current);
       if (responderChannelRef.current) supabaseRef.current?.removeChannel(responderChannelRef.current);
+      if (crashChannelRef.current) supabaseRef.current?.removeChannel(crashChannelRef.current);
     };
   }, []);
 
@@ -208,9 +232,40 @@ export default function DashboardPage() {
     };
   }
 
+  function mapCrashLog(raw: any): CrashLog {
+    const lat = raw.latitude != null ? Number(raw.latitude) : null;
+    const lng = raw.longitude != null ? Number(raw.longitude) : null;
+    return {
+      id: raw.id,
+      detectedAt: new Date(raw.detected_at).getTime(),
+      devicePlatform: raw.device_platform || '',
+      mode: raw.mode || '',
+      sensitivity: raw.sensitivity || '',
+      gForce: Number(raw.g_force ?? 0),
+      jerkGs: Number(raw.jerk_gs ?? 0),
+      location: lat != null && lng != null ? { lat, lng } : undefined,
+      address: raw.address || undefined,
+      outcome: raw.outcome || undefined,
+      resolved: !!raw.resolved,
+      resolvedAt: raw.resolved_at ? new Date(raw.resolved_at).getTime() : undefined,
+    };
+  }
+
+  // Optimistic resolve — flip the marker green now, sync to Supabase fire-and-forget
+  const handleResolveCrash = useCallback(async (id: string) => {
+    setCrashLogs(prev => prev.map(c => (c.id === id ? { ...c, resolved: true, resolvedAt: Date.now() } : c)));
+    try {
+      await supabaseRef.current
+        ?.from('crash_logs')
+        .update({ resolved: true, resolved_at: new Date().toISOString() })
+        .eq('id', id);
+    } catch {}
+  }, []);
+
   const filtered = useMemo(() => incidents.filter(i => filter === 'all' || i.triggerType === filter), [incidents, filter]);
   const activeCount = useMemo(() => incidents.filter(i => i.status !== 'resolved').length, [incidents]);
   const resolvedCount = useMemo(() => incidents.filter(i => i.status === 'resolved').length, [incidents]);
+  const unresolvedCrashes = useMemo(() => crashLogs.filter(c => !c.resolved).length, [crashLogs]);
 
   const filters: { key: typeof filter; label: string }[] = [
     { key: 'all', label: 'All' }, { key: 'auto', label: 'Auto' }, { key: 'manual', label: 'Manual' },
@@ -316,8 +371,31 @@ export default function DashboardPage() {
             >
               {showMarkers ? '● Landmarks' : '○ Landmarks'}
             </button>
+            <button
+              onClick={() => setShowCrashes(c => !c)}
+              style={{
+                fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em',
+                padding: '5px 10px', borderRadius: 4,
+                background: showCrashes ? 'var(--red)' : 'var(--surface)',
+                color: showCrashes ? '#fff' : 'var(--text-muted)',
+                border: '1px solid var(--border-mid)', cursor: 'pointer', transition: 'all 0.15s',
+              }}
+            >
+              {showCrashes ? `⚠ Crashes ${unresolvedCrashes}` : '○ Crashes'}
+            </button>
           </div>
-          <MapWithNoSSR responders={responders} incidents={incidents} center={mapCenter} userLocation={userLocation} showMarkers={showMarkers} heatPoints={heatPoints} showHeat={showHeat} />
+          <MapWithNoSSR
+            responders={responders}
+            incidents={incidents}
+            crashLogs={crashLogs}
+            center={mapCenter}
+            userLocation={userLocation}
+            showMarkers={showMarkers}
+            showCrashes={showCrashes}
+            heatPoints={heatPoints}
+            showHeat={showHeat}
+            onResolveCrash={handleResolveCrash}
+          />
         </div>
       </div>
     </div>

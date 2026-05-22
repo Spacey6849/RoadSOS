@@ -89,6 +89,8 @@
 | `address` | text | |
 | `outcome` | text | `sos_sent`/`cancelled`/pending |
 | `created_at` | timestamptz | |
+| `resolved` | boolean | Default `false`; set true from dashboard map |
+| `resolved_at` | timestamptz | Set when a responder resolves the crash |
 
 ### `profiles`
 | Column | Type |

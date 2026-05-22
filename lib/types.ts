@@ -78,3 +78,20 @@ export interface Responder {
   type: string;
   updatedAt: number;
 }
+
+/* A crash detected by the mobile app's accelerometer, logged to `crash_logs`.
+   `resolved` flips to true when a responder clears it from the dashboard. */
+export interface CrashLog {
+  id: string;
+  detectedAt: number;
+  devicePlatform: string;
+  mode: string;
+  sensitivity: string;
+  gForce: number;
+  jerkGs: number;
+  location?: { lat: number; lng: number };
+  address?: string;
+  outcome?: string;
+  resolved: boolean;
+  resolvedAt?: number;
+}

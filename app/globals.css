@@ -93,6 +93,29 @@ img:not(.leaflet-tile):not(.leaflet-tile-container img) { display: block; max-wi
 @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .animate-pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
 
+/* ─── Crash markers (red pulsing wave / green when resolved) ─── */
+@keyframes crash-wave {
+  0%   { transform: scale(0.5); opacity: 0.85; }
+  100% { transform: scale(3.4); opacity: 0; }
+}
+.crash-marker-inner { position: relative; width: 20px; height: 20px; }
+.crash-marker-inner .crash-wave {
+  position: absolute; left: 50%; top: 50%;
+  width: 16px; height: 16px; margin: -8px 0 0 -8px;
+  border-radius: 50%; background: rgba(255, 59, 48, 0.55);
+  animation: crash-wave 1.8s ease-out infinite;
+  will-change: transform, opacity;
+}
+.crash-marker-inner .crash-wave-2 { animation-delay: 0.9s; }
+.crash-marker-inner .crash-core {
+  position: absolute; left: 50%; top: 50%;
+  width: 14px; height: 14px; margin: -7px 0 0 -7px;
+  border-radius: 50%; border: 2px solid #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+}
+.crash-core-active { background: #FF3B30; }
+.crash-core-resolved { background: #34C759; }
+
 /* Scanline overlay on map */
 .map-scanline::after {
   content: '';

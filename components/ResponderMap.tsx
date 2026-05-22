@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import type { Responder, Incident } from '@/lib/types';
+import type { Responder, Incident, CrashLog } from '@/lib/types';
 
 /* Watches center prop and flies the map there — must be inside MapContainer */
 function FlyToCenter({ center }: { center?: [number, number] }) {
@@ -60,22 +60,129 @@ function HeatLayer({ points }: { points: [number, number][] }) {
   return null;
 }
 
+/* Severity derived from peak G-force — mirrors the crash-logs admin table */
+function crashSeverity(g: number): { label: string; color: string } {
+  if (g > 3) return { label: 'CRITICAL', color: '#FF3B30' };
+  if (g > 1.5) return { label: 'MODERATE', color: '#FF9F0A' };
+  return { label: 'MINOR', color: 'var(--text-muted)' };
+}
+
+/* One label/value line inside the crash popup */
+function CrashRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '2px 0' }}>
+      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{value}</span>
+    </div>
+  );
+}
+
+/* Popup card for a crash marker — details + Google Maps link + resolve action */
+function CrashPopupBody({ crash, onResolveCrash }: { crash: CrashLog; onResolveCrash?: (id: string) => void }) {
+  const [resolving, setResolving] = useState(false);
+  const sev = crashSeverity(crash.gForce);
+  const time = new Date(crash.detectedAt).toLocaleString('en-IN', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  const mapsUrl = crash.location
+    ? `https://www.google.com/maps/search/?api=1&query=${crash.location.lat},${crash.location.lng}`
+    : undefined;
+
+  const handleResolve = () => {
+    if (!onResolveCrash || resolving) return;
+    setResolving(true);
+    onResolveCrash(crash.id);
+  };
+
+  return (
+    <div style={{ minWidth: 210, fontFamily: 'inherit' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600, color: crash.resolved ? '#34C759' : '#FF3B30' }}>
+          {crash.resolved ? '✓ CRASH RESOLVED' : '⚠ CRASH DETECTED'}
+        </span>
+        <span style={{
+          fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 600, letterSpacing: '0.06em',
+          padding: '2px 6px', borderRadius: 3, color: sev.color,
+          border: `1px solid ${sev.color}`,
+        }}>{sev.label}</span>
+      </div>
+
+      {/* Data rows */}
+      <div style={{ fontSize: 11, borderTop: '1px solid var(--map-popup-border)', paddingTop: 5 }}>
+        <CrashRow label="G-Force" value={`${crash.gForce.toFixed(2)} g`} />
+        <CrashRow label="Jerk" value={`${crash.jerkGs.toFixed(1)} g/s`} />
+        {crash.mode && <CrashRow label="Mode" value={crash.mode} />}
+        <CrashRow label="Outcome" value={crash.outcome ?? 'pending'} />
+      </div>
+
+      {/* Detected time + address */}
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6 }}>
+        Detected {time}
+        {crash.location && (
+          <span style={{ marginLeft: 6 }}>
+            {crash.location.lat.toFixed(4)}, {crash.location.lng.toFixed(4)}
+          </span>
+        )}
+      </div>
+      {crash.address && (
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{crash.address}</div>
+      )}
+
+      {/* Status line */}
+      <div style={{ fontSize: 11, fontWeight: 600, color: crash.resolved ? '#34C759' : '#FF3B30', marginTop: 8 }}>
+        {crash.resolved ? 'Cleared by responder' : 'Awaiting responder action'}
+      </div>
+
+      {/* Open in Google Maps */}
+      {mapsUrl && (
+        <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
+          style={{
+            display: 'block', textAlign: 'center', marginTop: 8,
+            fontFamily: 'var(--font-mono)', fontSize: 11, color: '#0A84FF',
+            border: '1px solid var(--map-popup-border)', borderRadius: 5, padding: '6px 0',
+            textDecoration: 'none',
+          }}
+        >⤴ Open in Google Maps</a>
+      )}
+
+      {/* Resolve action */}
+      {!crash.resolved && (
+        <button onClick={handleResolve} disabled={resolving}
+          style={{
+            width: '100%', marginTop: 6, padding: '6px 0', borderRadius: 5,
+            fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
+            background: resolving ? 'var(--text-muted)' : '#34C759',
+            color: '#fff', border: 'none', cursor: resolving ? 'default' : 'pointer',
+          }}
+        >{resolving ? 'Resolving…' : '✓ Mark Resolved'}</button>
+      )}
+    </div>
+  );
+}
+
 export default function ResponderMap({
   responders,
   incidents = [],
+  crashLogs = [],
   center,
   userLocation,
   showMarkers = true,
+  showCrashes = true,
   heatPoints = [],
   showHeat = false,
+  onResolveCrash,
 }: {
   responders: Responder[];
   incidents?: Incident[];
+  crashLogs?: CrashLog[];
   center?: [number, number];
   userLocation?: [number, number];
   showMarkers?: boolean;
+  showCrashes?: boolean;
   heatPoints?: [number, number][];
   showHeat?: boolean;
+  onResolveCrash?: (id: string) => void;
 }) {
   const [ready, setReady] = useState(false);
   const [isDark, setIsDark] = useState(true);
@@ -114,6 +221,19 @@ export default function ResponderMap({
     iconSize: [14, 14], iconAnchor: [7, 7], popupAnchor: [0, -10],
   });
 
+  // Crash markers — red with an expanding wave while active, static green once resolved
+  const crashIconActive = L.divIcon({
+    className: '',
+    html: '<div class="crash-marker-inner"><span class="crash-wave"></span><span class="crash-wave crash-wave-2"></span><span class="crash-core crash-core-active"></span></div>',
+    iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -12],
+  });
+
+  const crashIconResolved = L.divIcon({
+    className: '',
+    html: '<div class="crash-marker-inner"><span class="crash-core crash-core-resolved"></span></div>',
+    iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -12],
+  });
+
   const responderIcon = new L.Icon({
     iconUrl: 'data:image/svg+xml,' + encodeURIComponent(
       '<svg xmlns="http://www.w3.org/2000/svg" width="25" height="41">' +
@@ -128,12 +248,15 @@ export default function ResponderMap({
     ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
     : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
 
+  const crashWithLoc = crashLogs.find(c => c.location);
   const incidentWithLoc = incidents.find(i => i.location);
   const initialCenter: [number, number] =
     center ?? (incidentWithLoc?.location
       ? [incidentWithLoc.location.lat, incidentWithLoc.location.lng]
-      : [20.5937, 78.9629]);
-  const initialZoom = center ? 13 : incidentWithLoc ? 11 : 5;
+      : crashWithLoc?.location
+        ? [crashWithLoc.location.lat, crashWithLoc.location.lng]
+        : [20.5937, 78.9629]);
+  const initialZoom = center ? 13 : (incidentWithLoc || crashWithLoc) ? 11 : 5;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 400, overflow: 'hidden', isolation: 'isolate' }}>
@@ -172,6 +295,19 @@ export default function ResponderMap({
             </Popup>
           </Marker>
         )}
+
+        {showCrashes && crashLogs.filter(c => c.location).map(crash => (
+          <Marker
+            key={`crash-${crash.id}`}
+            position={[crash.location!.lat, crash.location!.lng]}
+            icon={crash.resolved ? crashIconResolved : crashIconActive}
+            zIndexOffset={crash.resolved ? 0 : 1000}
+          >
+            <Popup>
+              <CrashPopupBody crash={crash} onResolveCrash={onResolveCrash} />
+            </Popup>
+          </Marker>
+        ))}
 
         {showMarkers && incidents.filter(i => i.location).map(inc => (
           <Marker key={inc.id} position={[inc.location!.lat, inc.location!.lng]} icon={incidentIcon}>
