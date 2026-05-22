@@ -66,6 +66,15 @@ export default function TrackPage() {
     return () => { supabase.removeChannel(channel); };
   }, [incidentId]);
 
+  // Parse PostGIS location. Must run unconditionally — before any early
+  // return below — or React throws error #310 (hook count changes between
+  // the loading render and the loaded render).
+  const mapCenter = useMemo<[number, number] | undefined>(() => {
+    if (!raw?.location?.coordinates) return undefined;
+    const [lng, lat] = raw.location.coordinates;
+    return [lat, lng];
+  }, [raw?.location]);
+
   async function handleResolve() {
     if (!raw) return;
     setResolving(true);
@@ -117,13 +126,6 @@ export default function TrackPage() {
       </div>
     );
   }
-
-  // Parse PostGIS location
-  const mapCenter = useMemo<[number, number] | undefined>(() => {
-    if (!raw.location?.coordinates) return undefined;
-    const [lng, lat] = raw.location.coordinates;
-    return [lat, lng];
-  }, [raw.location]);
 
   const isActive = raw.status !== 'resolved';
   const statusLabel = isActive ? t('track.sosActive') : t('track.sosResolved');
