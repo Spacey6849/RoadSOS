@@ -1,14 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-// Server-side only — service role key never exposed to client
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Server-side only — service role key never exposed to client.
+// Created lazily (not at module scope) so `next build` doesn't evaluate it:
+// a missing key then fails per-request instead of breaking the build.
+let supabaseClient: SupabaseClient | null = null;
+
+function getSupabase(): SupabaseClient {
+  if (supabaseClient) return supabaseClient;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceRoleKey) {
+    throw new Error(
+      'Supabase is not configured: set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY'
+    );
+  }
+  supabaseClient = createClient(url, serviceRoleKey);
+  return supabaseClient;
+}
 
 export async function POST(req: NextRequest) {
   try {
+    const supabase = getSupabase();
     const { name, phone, lat, lng } = await req.json();
 
     if (!name?.trim() || !phone?.trim()) {
