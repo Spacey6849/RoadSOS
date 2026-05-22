@@ -396,6 +396,12 @@ export default function DashboardPage() {
             showHeat={showHeat}
             onResolveCrash={handleResolveCrash}
           />
+          {/* Show info when no incidents have location data */}
+          {showMarkers && incidents.length > 0 && incidents.filter(i => i.location).length === 0 && (
+            <div style={{ position: 'absolute', bottom: 32, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, pointerEvents: 'none', background: 'rgba(17,17,17,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '6px 12px', fontFamily: 'var(--font-mono)', fontSize: 10, color: '#71717A', whiteSpace: 'nowrap' }}>
+              No GPS data — incidents exist but location not yet recorded
+            </div>
+          )}
         </div>
       </div>
     </div>
