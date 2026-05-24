@@ -46,7 +46,9 @@ export function useSOSFlow() {
 
         const message = buildSOSMessage(userName, location, triggerType, profile?.medicalInfo);
 
-        // Best-effort Supabase incident log — never blocks SMS
+        // Best-effort Supabase incident log — never blocks SMS.
+        // Use .then(onFulfilled, onRejected) instead of .then().catch() because
+        // supabase's PostgrestFilterBuilder is typed as PromiseLike (no .catch).
         supabase.from('incidents').insert({
           id: incidentId,
           user_name: userName,
@@ -55,7 +57,7 @@ export function useSOSFlow() {
           address: location.address,
           country_code: 'IN',
           status: 'active',
-        }).then(() => {}).catch(() => {});
+        }).then(undefined, () => {});
 
         const { statuses: smsStatuses, smsPermissionBlocked } = await sendSOS(contacts, message, incidentId, location);
 

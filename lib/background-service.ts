@@ -37,71 +37,29 @@ const CRASH_PENDING_KEY = 'roadsos_pending_crash';
 const SERVICE_CHANNEL = 'roadsos-service';
 
 export async function setupServiceChannel(): Promise<void> {
-  const N = await getN();
-  if (!N) return;
-  try {
-    await N.setNotificationChannelAsync(SERVICE_CHANNEL, {
-      name: 'RoadSoS Active',
-      importance: N.AndroidImportance.LOW, // silent but visible — doesn't disturb user
-      sound: null,
-      vibrationPattern: null,
-      enableVibrate: false,
-      showBadge: false,
-    });
-  } catch (err) {
-    console.warn('[bg-service] channel setup failed:', err);
-  }
+  // The native Kotlin foreground service creates its own notification channel
+  // on first start (CHANNEL_SERVICE in CrashDetectionService.kt). iOS has no
+  // notion of channels, so this is a no-op on every target we ship to.
 }
 
 /**
  * Start crash detection background service.
- * On Android: delegates to native foreground service (real background survival).
- * Elsewhere: posts a persistent notification to prevent JS thread kill.
+ * On Android: delegates to the native Kotlin foreground service.
+ * iOS isn't a target — Apple doesn't allow an equivalent persistent sensor
+ * service. The previous expo-notifications "sticky" fallback used several
+ * properties (sticky, dismissNotificationAsync) that no longer match the
+ * current API and were dead on the Android-only target anyway.
  */
 export async function startBackgroundService(mode: AppMode, sensitivity = 'medium'): Promise<void> {
   if (isNativeCrashServiceAvailable) {
     await startNativeCrashService(mode, sensitivity);
-    return;
-  }
-  const N = await getN();
-  if (!N) return;
-  try {
-    await N.scheduleNotificationAsync({
-      identifier: SERVICE_NOTIFICATION_ID,
-      content: {
-        title: mode === 'drive' ? '🚗 RoadSoS Drive Mode Active' : '🚶 RoadSoS Normal Mode Active',
-        body: 'Crash detection is running. Tap to open.',
-        sticky: true,
-        data: { type: 'service' },
-        // @ts-expect-error -- expo-notifications Android extras
-        android: {
-          channelId: SERVICE_CHANNEL,
-          ongoing: true,
-          priority: 'low',
-          smallIcon: 'notification_icon',
-        },
-      },
-      trigger: null,
-    });
-  } catch (err) {
-    console.warn('[bg-service] startBackgroundService failed:', err);
   }
 }
 
-/**
- * Stop crash detection background service.
- */
+/** Stop crash detection background service. Android-only delegator. */
 export async function stopBackgroundService(): Promise<void> {
   if (isNativeCrashServiceAvailable) {
     await stopNativeCrashService();
-    return;
-  }
-  const N = await getN();
-  if (!N) return;
-  try {
-    await N.dismissNotificationAsync(SERVICE_NOTIFICATION_ID);
-  } catch {
-    // Notification may not exist — ignore
   }
 }
 
