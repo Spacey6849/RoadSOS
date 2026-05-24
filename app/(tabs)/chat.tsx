@@ -12,7 +12,7 @@ import { useNearbyServices } from '../../hooks/useNearbyServices';
 import { fetchWithTimeout } from '../../lib/fetch-utils';
 import { buildContextBlock, streamGroqResponse, UserContext } from '../../lib/groq';
 import { getUserProfile } from '../../lib/offline-cache';
-import { getModelState, getSelectedVariant, initLocalLLM, isLLMReady, MODELS, stopLocalLLMCompletion, streamLocalLLM } from '../../lib/local-llm';
+import { getSelectedVariant, initLocalLLM, isLLMReady, MODELS, reconcileModelState, stopLocalLLMCompletion, streamLocalLLM } from '../../lib/local-llm';
 import { uid } from '../../lib/utils';
 import { ChatMessage } from '../../types';
 
@@ -92,7 +92,11 @@ export default function ChatScreen() {
         });
       }
       try {
-        const state = await getModelState();
+        // Reconcile (not just read) — catches the case where state='ready' but
+        // the model file went missing since the last run. Without this the
+        // chat shows "Loading…" for 90s then silently falls back to offline
+        // fallback, which looks like "the model I installed isn't working".
+        const state = await reconcileModelState();
         const selected = await getSelectedVariant();
         if (!cancelled && state === 'ready' && selected) {
           if (!cancelled) setLocalModelName(MODELS[selected]?.name ?? 'Llama 3.2');
@@ -244,14 +248,19 @@ export default function ChatScreen() {
         }
       }
 
-      // Auto-ladder: try the picked tier first, then degrade.
+      // Auto-ladder: try the picked tier first, then degrade. When the user
+      // EXPLICITLY toggled to local (`forceLocal`), do NOT fall back silently —
+      // they need to know if their chosen tier failed, not get a generic
+      // "I can't reach the assistant" message that hides the real problem.
       const primary = pickTier();
       const ladder: ResolvedTier[] =
         primary === 'cloud'
           ? ['cloud', localReady && isLLMReady() ? 'local' : 'offline', 'offline']
-          : primary === 'local'
-            ? ['local', 'offline']
-            : ['offline'];
+          : primary === 'local' && forceLocal
+            ? ['local'] // user explicitly chose local — no auto-fallback
+            : primary === 'local'
+              ? ['local', 'offline']
+              : ['offline'];
 
       // Dedupe consecutive duplicates without losing order.
       const seen = new Set<ResolvedTier>();
@@ -283,10 +292,21 @@ export default function ChatScreen() {
         return;
       }
 
-      // We always end with at least the offline tier's short message, so this
-      // is more of a defensive rope. No more pasting OFFLINE_FIRST_AID.
+      // No tier produced output. The only path that ends with !final today is
+      // when the user explicitly forced local (ladder=['local']) and local
+      // failed. Give them an actionable message instead of a generic one so
+      // they know to toggle back to cloud or reload the model.
       if (!final) {
-        final = `I can't reach the assistant right now. Please call 112 immediately.`;
+        if (forceLocal) {
+          const why = reasons[0] ? reasons[0].replace(/^local: /, '') : 'no response from on-device model';
+          final =
+            `On-device model couldn't answer (${why}).\n\n` +
+            `Tap the toggle in the header to switch back to cloud, ` +
+            `or open Settings → Offline AI to reload the model.\n\n` +
+            `For an immediate emergency, call 112.`;
+        } else {
+          final = `I can't reach the assistant right now. Please call 112 immediately.`;
+        }
       }
       // Only annotate when we silently degraded to local — gives the user a
       // hint that the answer is from the on-device model and might be terser
@@ -298,7 +318,7 @@ export default function ChatScreen() {
       setIsStreaming(false);
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
     },
-    [context, isStreaming, localReady, pickTier],
+    [context, isStreaming, localReady, pickTier, forceLocal],
   );
 
   const tier = pickTier();
@@ -353,19 +373,21 @@ export default function ChatScreen() {
                 accessibilityLabel={forceLocal ? 'Switch to online cloud AI' : `Switch to offline ${shortModelName}`}
                 accessibilityState={{ checked: forceLocal }}
                 hitSlop={8}
+                // Filled when local is forced, outlined when on cloud — the
+                // user can see at a glance which tier the next message will use.
                 style={({ pressed }) => ({
                   width: 38,
                   height: 38,
                   borderRadius: 10,
                   alignItems: 'center',
                   justifyContent: 'center',
-                  backgroundColor: `${indigo}1A`,
+                  backgroundColor: forceLocal ? indigo : `${indigo}1A`,
                   borderWidth: 1,
-                  borderColor: `${indigo}4D`,
+                  borderColor: forceLocal ? indigo : `${indigo}4D`,
                   opacity: pressed ? 0.7 : 1,
                 })}
               >
-                <ArrowLeftRight size={18} color={indigo} />
+                <ArrowLeftRight size={18} color={forceLocal ? '#FFFFFF' : indigo} />
               </Pressable>
             ) : (
               <StatusPill label={tierLabel} tone={tierTone} />

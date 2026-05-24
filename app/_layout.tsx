@@ -6,7 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Colors } from '../constants/theme';
 import { setupNotifications } from '../lib/notifications';
 import { setupServiceChannel } from '../lib/background-service';
-import { resumePendingDownload } from '../lib/local-llm';
+import { resumePendingDownload, warmupLocalLLM } from '../lib/local-llm';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 
 export default function RootLayout() {
@@ -21,6 +21,10 @@ export default function RootLayout() {
     resumePendingDownload().catch((err) => {
       console.warn('[RootLayout] resumePendingDownload failed:', err);
     });
+    // Pre-load the on-device LLM in the background so the chat screen doesn't
+    // pay the 30-90s GGUF-load cost on first open. Self-heals stale state if
+    // the model file went missing since last launch. No-op if not downloaded.
+    warmupLocalLLM();
   }, []);
 
   return (

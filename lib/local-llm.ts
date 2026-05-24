@@ -188,7 +188,11 @@ export async function isModelDownloaded(variant: ModelVariant): Promise<boolean>
     const path = await getModelPath(variant);
     if (!path) return false;
     const info = await fs.getInfoAsync(path);
-    return info.exists && ((info.size ?? 0) > 100_000_000);
+    if (!info.exists) return false;
+    // Require ≥90% of the catalogued size — catches truncated downloads that
+    // left a state='ready' marker behind. Old code accepted any file >100 MB,
+    // so a 200 MB partial of a 2 GB model passed and then failed to init.
+    return (info.size ?? 0) >= MODELS[variant].sizeBytes * 0.9;
   } catch {
     return false;
   }
@@ -218,6 +222,29 @@ export async function getModelState(): Promise<ModelState> {
 
 export async function saveModelState(s: ModelState): Promise<void> {
   await AsyncStorage.setItem(STATE_KEY, s);
+}
+
+/**
+ * Verify the persisted model state matches reality on disk. If state says
+ * 'ready' but the file is missing or truncated (OS cleanup, partial download,
+ * user wiped storage), reset to 'none' so the UI prompts a fresh download
+ * instead of silently failing on every init attempt. Always call this from
+ * consumers instead of getModelState() unless you have a reason not to.
+ */
+export async function reconcileModelState(): Promise<ModelState> {
+  const state = await getModelState();
+  if (state !== 'ready') return state;
+  const variant = await getSelectedVariant();
+  if (!variant) {
+    await saveModelState('none');
+    return 'none';
+  }
+  if (!(await isModelDownloaded(variant))) {
+    console.warn('[local-llm] state=ready but model file missing/truncated — resetting to none');
+    await saveModelState('none');
+    return 'none';
+  }
+  return 'ready';
 }
 
 export async function deleteModel(variant: ModelVariant): Promise<void> {
@@ -408,8 +435,11 @@ export async function startOrResumeDownload(
         status: 'completed',
       };
       emit();
-      await saveModelState('ready');
+      // Save the variant pointer BEFORE flipping state to 'ready' — otherwise
+      // a brief window exists where consumers see state='ready' with a stale
+      // (or missing) variant and try to init the wrong model.
       await saveSelectedVariant(variant);
+      await saveModelState('ready');
       await clearResume();
       currentProgress = null;
       onComplete?.(result.uri);
@@ -544,6 +574,9 @@ type LlamaContext = {
 
 let _ctx: LlamaContext | null = null;
 let _completionInProgress = false;
+// Shared in-flight init promise so RootLayout warmup + chat hydrate firing in
+// parallel don't both call initLlama and race to release each other's context.
+let _initPromise: Promise<boolean> | null = null;
 
 /**
  * Abort the current on-device completion. Called by the chat watchdog when the
@@ -602,29 +635,50 @@ function buildPrompt(
 }
 
 export async function initLocalLLM(variant: ModelVariant): Promise<boolean> {
+  // Already loaded — nothing to do. Caller can check isLLMReady() too but
+  // double-call safety here protects against accidental re-loads.
+  if (_ctx) return true;
+  // Another caller is already loading the model. Share the in-flight promise
+  // rather than starting a second initLlama that would race the first.
+  if (_initPromise) return _initPromise;
+
+  _initPromise = (async () => {
+    try {
+      const modelPath = await getModelPath(variant);
+      if (!modelPath) return false;
+      const fs = await getFileSystem();
+      if (!fs) return false;
+      const info = await fs.getInfoAsync(modelPath);
+      if (!info.exists) {
+        console.warn('[local-llm] init aborted — model file missing at', modelPath);
+        // Self-heal: drop the stale 'ready' marker so the UI prompts a fresh
+        // download instead of looping the same failed init every chat session.
+        await saveModelState('none').catch(() => {});
+        return false;
+      }
+      const { initLlama } = await import('llama.rn');
+      _ctx = await initLlama({
+        model: modelPath,
+        use_mlock: false,
+        n_ctx: 2048,
+        n_threads: 6,
+        n_gpu_layers: 0,
+      });
+      return _ctx !== null;
+    } catch (err) {
+      console.error('[local-llm] initLocalLLM failed:', err);
+      // initLlama threw — likely a corrupt file or an unsupported runtime on
+      // this device. Mark as errored so the chat screen can tell the user
+      // honestly instead of silently retrying every time.
+      await saveModelState('error').catch(() => {});
+      return false;
+    }
+  })();
+
   try {
-    const modelPath = await getModelPath(variant);
-    if (!modelPath) return false;
-    const fs = await getFileSystem();
-    if (!fs) return false;
-    const info = await fs.getInfoAsync(modelPath);
-    if (!info.exists) return false;
-
-    const { initLlama } = await import('llama.rn');
-
-    if (_ctx) { await _ctx.release(); _ctx = null; }
-
-    _ctx = await initLlama({
-      model: modelPath,
-      use_mlock: false,
-      n_ctx: 2048,
-      n_threads: 6,
-      n_gpu_layers: 0,
-    });
-    return true;
-  } catch (err) {
-    console.error('[local-llm] initLocalLLM failed:', err);
-    return false;
+    return await _initPromise;
+  } finally {
+    _initPromise = null;
   }
 }
 
@@ -708,6 +762,24 @@ export async function* streamLocalLLM(
 
 export function isLLMReady(): boolean {
   return _ctx !== null;
+}
+
+/**
+ * Pre-load the on-device model on app start so the chat screen finds it ready
+ * instead of waiting 30-90s for initLlama to slurp the GGUF off disk. Reconciles
+ * the persisted state with what's actually on disk first. No-op when no model
+ * is downloaded — safe to call unconditionally from RootLayout.
+ */
+export async function warmupLocalLLM(): Promise<void> {
+  try {
+    const state = await reconcileModelState();
+    if (state !== 'ready') return;
+    const variant = await getSelectedVariant();
+    if (!variant || isLLMReady()) return;
+    await initLocalLLM(variant);
+  } catch (err) {
+    console.warn('[local-llm] warmupLocalLLM failed:', err);
+  }
 }
 
 export async function releaseLocalLLM(): Promise<void> {
