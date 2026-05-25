@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "RoadSoS Responder",
+    "slug": "roadsos-responder",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "roadsos-responder",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#07090D"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.roadsos.responder",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RoadSoS Responder streams your live location to the dispatch dashboard so coordinators can route you to the nearest incident."
+      }
+    },
+    "android": {
+      "package": "com.roadsos.responder",
+      "adaptiveIcon": {
+        "backgroundColor": "#07090D"
+      },
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "RoadSoS Responder streams your live location to the dispatch dashboard so coordinators can route you to the nearest incident."
+        }
+      ]
+    ]
+  }
+}
