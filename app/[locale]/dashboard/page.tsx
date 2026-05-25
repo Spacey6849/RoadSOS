@@ -164,8 +164,14 @@ export default function DashboardPage() {
         }).subscribe();
 
       // Must chain .on() BEFORE .subscribe()
+      // Supabase broadcast callbacks receive { type, event, payload }; the
+      // actual responder data is the inner .payload object — accessing the
+      // outer object's fields directly returned undefined and quietly broke
+      // every responder dot on the map.
       responderChannelRef.current = supabase.channel('responder-locations-web')
-        .on('broadcast', { event: 'location-update' }, (payload: any) => {
+        .on('broadcast', { event: 'location-update' }, (msg: any) => {
+          const payload = msg?.payload;
+          if (!payload?.responderId) return;
           setResponders(prev => {
             const idx = prev.findIndex(r => r.id === payload.responderId);
             if (idx >= 0) {

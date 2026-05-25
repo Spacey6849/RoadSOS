@@ -56,7 +56,11 @@ export default function TrackPage() {
     fetchIncident();
     const supabase = createClient();
     const channel = supabase.channel(`track-${incidentId}`)
-      .on('broadcast', { event: 'location-update' }, (payload: any) => {
+      .on('broadcast', { event: 'location-update' }, (msg: any) => {
+        // Supabase wraps user data in msg.payload — reading the outer object's
+        // fields directly returns undefined.
+        const payload = msg?.payload;
+        if (!payload?.responderId) return;
         setResponders(prev => {
           const idx = prev.findIndex(r => r.id === payload.responderId);
           if (idx >= 0) { const next = [...prev]; next[idx] = { ...next[idx], lat: payload.lat, lng: payload.lng, updatedAt: Date.now() }; return next; }
