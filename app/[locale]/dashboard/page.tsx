@@ -172,6 +172,7 @@ export default function DashboardPage() {
         .on('broadcast', { event: 'location-update' }, (msg: any) => {
           const payload = msg?.payload;
           if (!payload?.responderId) return;
+          if (!Number.isFinite(payload.lat) || !Number.isFinite(payload.lng)) return;
           setResponders(prev => {
             const idx = prev.findIndex(r => r.id === payload.responderId);
             if (idx >= 0) {

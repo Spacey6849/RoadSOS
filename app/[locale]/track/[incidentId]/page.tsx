@@ -61,6 +61,7 @@ export default function TrackPage() {
         // fields directly returns undefined.
         const payload = msg?.payload;
         if (!payload?.responderId) return;
+        if (!Number.isFinite(payload.lat) || !Number.isFinite(payload.lng)) return;
         setResponders(prev => {
           const idx = prev.findIndex(r => r.id === payload.responderId);
           if (idx >= 0) { const next = [...prev]; next[idx] = { ...next[idx], lat: payload.lat, lng: payload.lng, updatedAt: Date.now() }; return next; }

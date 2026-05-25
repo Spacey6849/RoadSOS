@@ -327,7 +327,7 @@ export default function ResponderMap({
           </Marker>
         ))}
 
-        {showMarkers && responders.map(r => (
+        {showMarkers && responders.filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng)).map(r => (
           <Marker key={r.id} position={[r.lat, r.lng]} icon={responderIcon}>
             <Popup>
               <div style={{ minWidth: 120 }}>
