@@ -6,6 +6,13 @@ import { useLanguage } from '@/lib/i18n/LanguageProvider';
 import { createClient } from '@/lib/supabase/client';
 import type { Incident, Responder, CrashLog } from '@/lib/types';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+  DISPATCH_CHANNEL, DISPATCH_EVENT, RESPONSE_EVENT,
+  ASSIGNMENT_TIMEOUT_MS,
+  classifySeverity, rankResponders, buildDispatchPayload,
+  type ResponsePayload, type Severity,
+} from '@/lib/dispatch';
+import { ConfirmCrashModal } from '@/components/ConfirmCrashModal';
 
 const MapWithNoSSR = dynamic(() => import('@/components/ResponderMap'), {
   ssr: false,
@@ -117,10 +124,27 @@ export default function DashboardPage() {
   const [heatPoints, setHeatPoints] = useState<[number, number][]>([]);
   const [crashLogs, setCrashLogs] = useState<CrashLog[]>([]);
   const [showCrashes, setShowCrashes] = useState(true);
+
+  // ─── Dispatch state ─────────────────────────────────────────────────────────
+  // pendingCrash: shown in ConfirmCrashModal until confirmed/false-alarmed/timeout
+  const [pendingCrash, setPendingCrash] = useState<CrashLog | null>(null);
+  // crashes that exhausted all responders without an Accept — dispatcher must
+  // intervene manually (e.g. call a station)
+  const [needsManualDispatch, setNeedsManualDispatch] = useState<CrashLog[]>([]);
+  // assignmentsRef tracks in-flight dispatches so the 30s timer + responder
+  // accept/decline can rotate to the next-nearest responder
+  const assignmentsRef = useRef<Map<string, { triedIds: Set<string>; attempt: number; timer: ReturnType<typeof setTimeout> | null }>>(new Map());
+  // refs so handlers see the latest values without re-binding effects
+  const respondersRef = useRef<Responder[]>([]);
+  const crashLogsRef = useRef<CrashLog[]>([]);
+  useEffect(() => { respondersRef.current = responders; }, [responders]);
+  useEffect(() => { crashLogsRef.current = crashLogs; }, [crashLogs]);
+
   const seenIds = useRef<Set<string>>(new Set());
   const channelRef = useRef<any>(null);
   const responderChannelRef = useRef<any>(null);
   const crashChannelRef = useRef<any>(null);
+  const dispatchChannelRef = useRef<any>(null);
   const supabaseRef = useRef<any>(null);
 
   useEffect(() => {
@@ -189,10 +213,34 @@ export default function DashboardPage() {
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'crash_logs' }, (payload: any) => {
           const c = mapCrashLog(payload.new);
           setCrashLogs(prev => [c, ...prev.filter(x => x.id !== c.id)].slice(0, 50));
+          // Hand the crash to the dispatch pipeline (severity-aware confirm or
+          // immediate dispatch). Skip if already resolved or marked false-alarm
+          // on arrival (e.g. backfill from another tab).
+          if (!c.resolved && c.outcome !== 'false-alarm' && c.location) {
+            handleNewCrash(c);
+          }
         })
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'crash_logs' }, (payload: any) => {
           const c = mapCrashLog(payload.new);
           setCrashLogs(prev => prev.map(x => (x.id === c.id ? c : x)));
+          // If the crash was resolved (by a responder marking it done) cancel
+          // any in-flight assignment timer for it.
+          if (c.resolved) {
+            const a = assignmentsRef.current.get(c.id);
+            if (a?.timer) clearTimeout(a.timer);
+            assignmentsRef.current.delete(c.id);
+            setNeedsManualDispatch(prev => prev.filter(x => x.id !== c.id));
+            setPendingCrash(p => (p?.id === c.id ? null : p));
+          }
+        }).subscribe();
+
+      // Dispatch channel — receives Accept/Decline from responder apps.
+      // (Outbound dispatches go on the same channel.)
+      dispatchChannelRef.current = supabase.channel(DISPATCH_CHANNEL)
+        .on('broadcast', { event: RESPONSE_EVENT }, (msg: any) => {
+          const r = msg?.payload as ResponsePayload | undefined;
+          if (!r?.crashId || !r?.responderId) return;
+          handleResponderResponse(r);
         }).subscribe();
     }
     init();
@@ -200,7 +248,105 @@ export default function DashboardPage() {
       if (channelRef.current) supabaseRef.current?.removeChannel(channelRef.current);
       if (responderChannelRef.current) supabaseRef.current?.removeChannel(responderChannelRef.current);
       if (crashChannelRef.current) supabaseRef.current?.removeChannel(crashChannelRef.current);
+      if (dispatchChannelRef.current) supabaseRef.current?.removeChannel(dispatchChannelRef.current);
+      // Cancel any pending assignment timers
+      assignmentsRef.current.forEach(a => { if (a.timer) clearTimeout(a.timer); });
+      assignmentsRef.current.clear();
     };
+  }, []);
+
+  // ─── Dispatch pipeline ──────────────────────────────────────────────────────
+
+  // New crash arrived — classify and either dispatch now (CRITICAL) or queue
+  // for dispatcher confirmation (MODERATE/MINOR have a countdown window).
+  const handleNewCrash = useCallback((c: CrashLog) => {
+    const sev = classifySeverity(c.gForce, c.jerkGs);
+    if (sev === 'CRITICAL') {
+      dispatchToNextResponder(c, sev);
+      return;
+    }
+    // If a pending crash already occupies the modal, just dispatch this one
+    // straight away — don't queue a backlog of modals.
+    if (pendingCrashRef.current) {
+      dispatchToNextResponder(c, sev);
+      return;
+    }
+    pendingCrashRef.current = c;
+    setPendingCrash(c);
+  }, []);
+
+  const pendingCrashRef = useRef<CrashLog | null>(null);
+  useEffect(() => { pendingCrashRef.current = pendingCrash; }, [pendingCrash]);
+
+  // Find the nearest fresh on-duty responder we haven't tried, broadcast the
+  // assignment, and arm a 30s timer for auto-rotation to the next nearest.
+  const dispatchToNextResponder = useCallback((c: CrashLog, sev: Severity) => {
+    if (!c.location) return;
+    const entry = assignmentsRef.current.get(c.id) ?? { triedIds: new Set<string>(), attempt: 0, timer: null };
+    if (entry.timer) clearTimeout(entry.timer);
+
+    const candidates = rankResponders(respondersRef.current, c.location, entry.triedIds);
+    const next = candidates[0];
+    if (!next) {
+      // Exhausted — flag for manual dispatch
+      assignmentsRef.current.set(c.id, { ...entry, timer: null });
+      setNeedsManualDispatch(prev => prev.some(x => x.id === c.id) ? prev : [c, ...prev]);
+      return;
+    }
+    const attempt = entry.attempt + 1;
+    entry.triedIds.add(next.id);
+    entry.attempt = attempt;
+
+    const payload = buildDispatchPayload(c, next.id, attempt, sev);
+    if (!payload) return;
+    dispatchChannelRef.current?.send({ type: 'broadcast', event: DISPATCH_EVENT, payload });
+
+    // Auto-rotate if no Accept within ASSIGNMENT_TIMEOUT_MS
+    entry.timer = setTimeout(() => {
+      dispatchToNextResponder(c, sev);
+    }, ASSIGNMENT_TIMEOUT_MS);
+    assignmentsRef.current.set(c.id, entry);
+    // Clear manual-dispatch flag if we just re-armed
+    setNeedsManualDispatch(prev => prev.filter(x => x.id !== c.id));
+  }, []);
+
+  const handleResponderResponse = useCallback((r: ResponsePayload) => {
+    const entry = assignmentsRef.current.get(r.crashId);
+    if (!entry) return;
+    // Cancel the rotation timer either way — Accept ends the cycle, Decline
+    // means we should rotate now rather than waiting for the timer.
+    if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+    if (r.accepted) {
+      // Keep the entry around so we know the crash is owned; the assignment
+      // ends when the responder marks the crash resolved (UPDATE handler
+      // cleans up).
+      assignmentsRef.current.set(r.crashId, entry);
+      return;
+    }
+    // Declined — try next nearest right away.
+    const crash = crashLogsRef.current.find(c => c.id === r.crashId);
+    if (!crash) return;
+    const sev = classifySeverity(crash.gForce, crash.jerkGs);
+    dispatchToNextResponder(crash, sev);
+  }, [dispatchToNextResponder]);
+
+  const handleConfirmCrash = useCallback((c: CrashLog) => {
+    pendingCrashRef.current = null;
+    setPendingCrash(null);
+    const sev = classifySeverity(c.gForce, c.jerkGs);
+    dispatchToNextResponder(c, sev);
+  }, [dispatchToNextResponder]);
+
+  const handleFalseAlarm = useCallback(async (c: CrashLog) => {
+    pendingCrashRef.current = null;
+    setPendingCrash(null);
+    setCrashLogs(prev => prev.map(x => (x.id === c.id ? { ...x, outcome: 'false-alarm', resolved: true, resolvedAt: Date.now() } : x)));
+    try {
+      await supabaseRef.current
+        ?.from('crash_logs')
+        .update({ outcome: 'false-alarm', resolved: true, resolved_at: new Date().toISOString() })
+        .eq('id', c.id);
+    } catch {}
   }, []);
 
   // Fetch all incident locations for heatmap when toggled on
@@ -409,8 +555,47 @@ export default function DashboardPage() {
               No GPS data — incidents exist but location not yet recorded
             </div>
           )}
+
+          {/* Manual dispatch banner — crashes that exhausted all on-duty responders */}
+          {needsManualDispatch.length > 0 && (
+            <div style={{
+              position: 'absolute', top: 10, left: 10, zIndex: 1000,
+              background: 'rgba(255,59,48,0.95)', color: '#fff',
+              borderRadius: 6, padding: '8px 14px',
+              fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700,
+              display: 'flex', alignItems: 'center', gap: 10,
+              boxShadow: '0 6px 18px rgba(255,59,48,0.4)',
+            }}>
+              <span>⚠ MANUAL DISPATCH NEEDED · {needsManualDispatch.length} unassigned crash{needsManualDispatch.length === 1 ? '' : 'es'}</span>
+              <button
+                onClick={() => {
+                  // Retry — wipe tried set so we re-broadcast to whoever's now on-duty
+                  needsManualDispatch.forEach(c => {
+                    const e = assignmentsRef.current.get(c.id);
+                    if (e) { e.triedIds.clear(); e.attempt = 0; }
+                    const sev = classifySeverity(c.gForce, c.jerkGs);
+                    dispatchToNextResponder(c, sev);
+                  });
+                }}
+                style={{
+                  background: 'rgba(255,255,255,0.18)', color: '#fff', border: 'none',
+                  padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                  fontFamily: 'inherit', fontSize: 10, fontWeight: 700,
+                }}
+              >
+                RETRY
+              </button>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Dispatcher confirmation modal — non-CRITICAL crashes pause here briefly */}
+      <ConfirmCrashModal
+        crash={pendingCrash}
+        onConfirm={handleConfirmCrash}
+        onFalseAlarm={handleFalseAlarm}
+      />
     </div>
   );
 }
