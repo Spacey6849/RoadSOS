@@ -31,8 +31,13 @@ export function useSOSFlow() {
 
       try {
         const incidentId = generateId();
-        const profile = await getUserProfile();
-        const contacts = await getEmergencyContacts();
+        // Fetch profile + contacts in parallel — these AsyncStorage reads are
+        // cheap individually but stacking the awaits adds ~100ms of avoidable
+        // lag on the SOS hot path.
+        const [profile, contacts] = await Promise.all([
+          getUserProfile(),
+          getEmergencyContacts(),
+        ]);
         const userName = profile?.name ?? 'Unknown User';
 
         if (contacts.length === 0) {

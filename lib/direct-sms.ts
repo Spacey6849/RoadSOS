@@ -22,6 +22,11 @@ export const isDirectSmsSupported = Platform.OS === 'android' && native != null;
 
 export type SmsPermissionResult = 'granted' | 'denied' | 'blocked';
 
+// In-session cache: once we know SEND_SMS is granted, skip the native bridge
+// round-trip on every subsequent SOS. Resets on app restart, which naturally
+// catches the case where the user revoked the permission via system Settings.
+let _grantedCache = false;
+
 /**
  * Ask for SEND_SMS at runtime. On API 23+ Android requires a runtime grant in
  * addition to the manifest declaration.
@@ -32,10 +37,14 @@ export type SmsPermissionResult = 'granted' | 'denied' | 'blocked';
  *   'blocked'  — user checked "Don't ask again"; must open system Settings
  */
 export async function ensureSendSmsPermission(): Promise<SmsPermissionResult> {
+  if (_grantedCache) return 'granted';
   if (!isDirectSmsSupported) return 'denied';
   try {
     const already = await native!.isPermissionGranted();
-    if (already) return 'granted';
+    if (already) {
+      _grantedCache = true;
+      return 'granted';
+    }
     const result = await PermissionsAndroid.request(
       PermissionsAndroid.PERMISSIONS.SEND_SMS,
       {
@@ -46,7 +55,10 @@ export async function ensureSendSmsPermission(): Promise<SmsPermissionResult> {
         buttonNegative: 'Not now',
       },
     );
-    if (result === PermissionsAndroid.RESULTS.GRANTED) return 'granted';
+    if (result === PermissionsAndroid.RESULTS.GRANTED) {
+      _grantedCache = true;
+      return 'granted';
+    }
     if (result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) return 'blocked';
     return 'denied';
   } catch {
@@ -71,6 +83,10 @@ export async function sendDirectSms(phones: string[], message: string): Promise<
     return await native!.sendDirect(phones, message);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    // If the native side reports the permission as no longer granted (user
+    // revoked it via Settings mid-session), invalidate the cache so the next
+    // call re-requests rather than silently skipping the permission step.
+    if (/PERMISSION_DENIED|permission/i.test(reason)) _grantedCache = false;
     return phones.map((phone) => ({ phone, ok: false, error: reason }));
   }
 }
