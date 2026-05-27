@@ -11,6 +11,8 @@ export default function AdminPage() {
   const [elapsed, setElapsed] = useState(0);
   const [serviceCount, setServiceCount] = useState(0);
   const [incidentCount, setIncidentCount] = useState(0);
+  const [clearing, setClearing] = useState(false);
+  const [clearResult, setClearResult] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
     const iv = setInterval(() => setElapsed(e => e + 1), 1000);
@@ -22,6 +24,57 @@ export default function AdminPage() {
     supabase.from('services').select('id', { count: 'exact', head: true }).then(({ count }) => { if (count != null) setServiceCount(count); });
     supabase.from('incidents').select('id', { count: 'exact', head: true }).eq('status', 'active').then(({ count }) => { if (count != null) setIncidentCount(count); });
   }, []);
+
+  // Hard-deletes every crash_logs row with resolved=true plus every incidents
+  // row with status='resolved' — both are what shows up as "resolved markers"
+  // on the dashboard map. The dashboard listens for postgres_changes DELETE
+  // events on both tables, so open dashboards drop the markers in realtime.
+  async function handleClearResolved() {
+    if (clearing) return;
+    const supabase = createClient();
+
+    // Preview counts first so the confirm dialog is honest about what gets dropped.
+    const [crashRes, incRes] = await Promise.all([
+      supabase.from('crash_logs').select('id', { count: 'exact', head: true }).eq('resolved', true),
+      supabase.from('incidents').select('id', { count: 'exact', head: true }).eq('status', 'resolved'),
+    ]);
+    const crashN = crashRes.count ?? 0;
+    const incN = incRes.count ?? 0;
+
+    if (crashN === 0 && incN === 0) {
+      setClearResult({ kind: 'ok', text: 'Nothing to clear — no resolved markers exist.' });
+      return;
+    }
+
+    const ok = window.confirm(
+      `Delete ${crashN} resolved crash${crashN === 1 ? '' : 'es'} and ${incN} resolved incident${incN === 1 ? '' : 's'}?\n\nThis cannot be undone.`
+    );
+    if (!ok) return;
+
+    setClearing(true);
+    setClearResult(null);
+    try {
+      const [crashDel, incDel] = await Promise.all([
+        crashN > 0 ? supabase.from('crash_logs').delete().eq('resolved', true) : Promise.resolve({ error: null }),
+        incN > 0 ? supabase.from('incidents').delete().eq('status', 'resolved') : Promise.resolve({ error: null }),
+      ]);
+      const err = (crashDel as { error?: { message: string } | null }).error ?? (incDel as { error?: { message: string } | null }).error;
+      if (err) {
+        setClearResult({ kind: 'err', text: `Failed: ${err.message}` });
+        return;
+      }
+      // Refresh the active-incident counter — it changes when we delete resolved
+      // incidents (since the count query filters on status='active', the number
+      // itself doesn't move, but any rows that were active-then-flipped would).
+      const { count } = await supabase.from('incidents').select('id', { count: 'exact', head: true }).eq('status', 'active');
+      if (count != null) setIncidentCount(count);
+      setClearResult({ kind: 'ok', text: `Cleared ${crashN} crash${crashN === 1 ? '' : 'es'} and ${incN} incident${incN === 1 ? '' : 's'}.` });
+    } catch (e) {
+      setClearResult({ kind: 'err', text: e instanceof Error ? e.message : 'Unknown error' });
+    } finally {
+      setClearing(false);
+    }
+  }
 
   const statuses = [
     { name: 'Database', status: 'Connected', ok: true },
@@ -105,13 +158,48 @@ export default function AdminPage() {
       <section>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--text-faint)', letterSpacing: '0.08em', marginBottom: 12 }}>Quick actions</p>
         <div style={{ display: 'flex', gap: 8 }}>
-          {['Export incidents CSV', 'Clear resolved', 'Refresh services'].map(label => (
-            <button key={label} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 5, height: 34, padding: '0 14px', cursor: 'pointer', transition: 'all 0.15s' }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-            >{label}</button>
-          ))}
+          {[
+            { label: 'Export incidents CSV', onClick: undefined, busyLabel: null },
+            { label: 'Clear resolved', onClick: handleClearResolved, busyLabel: clearing ? 'Clearing…' : null },
+            { label: 'Refresh services', onClick: undefined, busyLabel: null },
+          ].map(btn => {
+            const disabled = btn.onClick === undefined || (btn.label === 'Clear resolved' && clearing);
+            const labelText = btn.busyLabel ?? btn.label;
+            return (
+              <button
+                key={btn.label}
+                onClick={btn.onClick}
+                disabled={disabled}
+                style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-muted)',
+                  border: '1px solid var(--border)', borderRadius: 5, height: 34, padding: '0 14px',
+                  cursor: disabled ? 'not-allowed' : 'pointer', transition: 'all 0.15s',
+                  background: 'transparent',
+                  opacity: disabled && !btn.busyLabel ? 0.55 : 1,
+                }}
+                onMouseEnter={e => {
+                  if (disabled) return;
+                  e.currentTarget.style.background = 'var(--bg-elevated)';
+                  e.currentTarget.style.color = 'var(--text-primary)';
+                }}
+                onMouseLeave={e => {
+                  if (disabled) return;
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.color = 'var(--text-muted)';
+                }}
+              >{labelText}</button>
+            );
+          })}
         </div>
+        {clearResult && (
+          <p style={{
+            marginTop: 10,
+            fontFamily: 'var(--font-mono)', fontSize: 11,
+            color: clearResult.kind === 'ok' ? 'var(--green)' : 'var(--red)',
+          }}>
+            {clearResult.text}
+          </p>
+        )}
       </section>
     </div>
   );

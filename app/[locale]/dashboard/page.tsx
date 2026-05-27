@@ -185,6 +185,15 @@ export default function DashboardPage() {
           setIncidents(prev => [inc, ...prev].slice(0, 20));
           setAccentFlash(true);
           setTimeout(() => setAccentFlash(false), 2000);
+        })
+        // DELETE — fires when admin "Clear resolved" wipes resolved incidents.
+        // Supabase only sends the primary key in payload.old by default; that's
+        // enough to drop the row from local state.
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'incidents' }, (payload: any) => {
+          const id = payload?.old?.id;
+          if (!id) return;
+          setIncidents(prev => prev.filter(x => x.id !== id));
+          seenIds.current.delete(id);
         }).subscribe();
 
       // Must chain .on() BEFORE .subscribe()
@@ -232,6 +241,17 @@ export default function DashboardPage() {
             setNeedsManualDispatch(prev => prev.filter(x => x.id !== c.id));
             setPendingCrash(p => (p?.id === c.id ? null : p));
           }
+        })
+        // DELETE — admin "Clear resolved" wipes resolved crashes from the table.
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'crash_logs' }, (payload: any) => {
+          const id = payload?.old?.id;
+          if (!id) return;
+          setCrashLogs(prev => prev.filter(x => x.id !== id));
+          const a = assignmentsRef.current.get(id);
+          if (a?.timer) clearTimeout(a.timer);
+          assignmentsRef.current.delete(id);
+          setNeedsManualDispatch(prev => prev.filter(x => x.id !== id));
+          setPendingCrash(p => (p?.id === id ? null : p));
         }).subscribe();
 
       // Dispatch channel — receives Accept/Decline from responder apps.
