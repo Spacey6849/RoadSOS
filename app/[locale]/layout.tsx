@@ -7,6 +7,13 @@ import { LanguageProvider, useLanguage } from '@/lib/i18n/LanguageProvider';
 import { LANGUAGES, type Language } from '@/lib/i18n/translations';
 import { ThemeProvider, useTheme } from '@/lib/ThemeProvider';
 
+// Two-letter ISO code per language — `.slice(0,2)` gives "MA" for "Marathi"
+// (wrong; should be MR) so we map explicitly.
+const LANG_CODE: Record<Language, string> = {
+  English: 'EN', Hindi: 'HI', Tamil: 'TA', Telugu: 'TE',
+  Kannada: 'KN', Malayalam: 'ML', Marathi: 'MR',
+};
+
 const NAV_ITEMS = (locale: string) => [
   { href: `/${locale}/dashboard`, label: 'Dashboard' },
   { href: `/${locale}/analytics`, label: 'Analytics' },
@@ -118,7 +125,7 @@ function LocaleContent({ children }: { children: React.ReactNode }) {
               onClick={() => setLangOpen(!langOpen)}
               style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}
             >
-              {language.slice(0, 2).toUpperCase()} ▾
+              {LANG_CODE[language] ?? 'EN'} ▾
             </button>
             {langOpen && (
               <div style={{

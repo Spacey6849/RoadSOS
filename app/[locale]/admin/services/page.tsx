@@ -14,6 +14,24 @@ const TYPE_COLORS: Record<ServiceType, string> = {
   police: '#5E5CE6', towing: '#FF6B00', puncture: '#8B8000', showroom: '#71717A',
 };
 
+// Shape we get back from Supabase `services` (matches the SQL schema, with
+// location as PostGIS geography rendered as GeoJSON).
+type ServiceRow = {
+  id: string;
+  name: string;
+  service_type: ServiceType;
+  address?: string | null;
+  primary_phone?: string | null;
+  is_24x7?: boolean | null;
+  tags?: Record<string, unknown> | null;
+  location?: { coordinates?: [number, number] } | null;
+};
+
+// Length caps — prevent unbounded writes to the table.
+const MAX_NAME = 120;
+const MAX_ADDRESS = 240;
+const MAX_PHONE = 24;
+
 export default function ServicesPage() {
   const { t } = useLanguage();
   const [services, setServices] = useState<NearbyService[]>([]);
@@ -23,12 +41,13 @@ export default function ServicesPage() {
   const [form, setForm] = useState({ name: '', service_type: 'hospital' as ServiceType, primary_phone: '', address: '', lat: '', lng: '' });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
+  const [deleteError, setDeleteError] = useState('');
 
   const loadServices = useCallback(() => {
     const supabase = createClient();
     setLoading(true);
     supabase.from('services').select('*').limit(50).then(({ data }) => {
-      if (data) setServices(data.map((s: any) => ({
+      if (data) setServices((data as ServiceRow[]).map((s) => ({
         id: s.id, name: s.name, service_type: s.service_type,
         address: s.address || '', primary_phone: s.primary_phone || '',
         is_24x7: s.is_24x7 || false, tags: s.tags || {}, distance_km: 0,
@@ -47,17 +66,48 @@ export default function ServicesPage() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.name.trim() || !form.primary_phone.trim()) { setFormError('Name and phone required.'); return; }
+    const name = form.name.trim();
+    const phone = form.primary_phone.trim();
+    const address = form.address.trim();
+
+    if (!name || !phone) { setFormError('Name and phone required.'); return; }
+    if (name.length > MAX_NAME) { setFormError(`Name must be ≤ ${MAX_NAME} characters.`); return; }
+    if (phone.length > MAX_PHONE) { setFormError(`Phone must be ≤ ${MAX_PHONE} characters.`); return; }
+    if (address.length > MAX_ADDRESS) { setFormError(`Address must be ≤ ${MAX_ADDRESS} characters.`); return; }
+    // Permissive phone shape — digits, +, spaces, dashes, parens. Allows
+    // short emergency numbers (108, 112) AND international formats.
+    if (!/^[0-9+\-\s()]{3,}$/.test(phone)) {
+      setFormError('Phone must contain only digits, spaces, + - ( ) and be at least 3 characters.');
+      return;
+    }
+    // lat/lng must parse as finite numbers in valid ranges, OR both empty
+    // (a service with no coordinates is allowed — distance display skips it).
+    let locationValue: string | undefined;
+    if (form.lat.trim() || form.lng.trim()) {
+      const lat = Number(form.lat);
+      const lng = Number(form.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        setFormError('Latitude and longitude must be numbers.');
+        return;
+      }
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        setFormError('Latitude must be -90..90 and longitude -180..180.');
+        return;
+      }
+      locationValue = `POINT(${lng} ${lat})`;
+    }
+
     setFormError(''); setSaving(true);
     const supabase = createClient();
-    const payload = { name: form.name.trim(), service_type: form.service_type, primary_phone: form.primary_phone.trim(), address: form.address.trim(), location: `POINT(${form.lng || 0} ${form.lat || 0})` };
+    const payload: Record<string, unknown> = { name, service_type: form.service_type, primary_phone: phone, address };
+    if (locationValue) payload.location = locationValue;
     try {
       if (editingId) { const { error } = await supabase.from('services').update(payload).eq('id', editingId); if (error) throw error; }
       else { const { error } = await supabase.from('services').insert(payload); if (error) throw error; }
       setPanelOpen(false); setEditingId(null);
       setForm({ name: '', service_type: 'hospital', primary_phone: '', address: '', lat: '', lng: '' });
       loadServices();
-    } catch (err) { setFormError(err instanceof Error ? err.message : 'Save failed'); }
+    } catch (err: unknown) { setFormError(err instanceof Error ? err.message : 'Save failed'); }
     setSaving(false);
   }
 
@@ -66,9 +116,17 @@ export default function ServicesPage() {
     setEditingId(svc.id); setPanelOpen(true);
   }
 
-  async function handleDelete(id: string) {
+  async function handleDelete(svc: NearbyService) {
+    // Native confirm — one-click delete on a destructive admin action is
+    // exactly the kind of UI mistake that wipes a row by accident.
+    if (!window.confirm(`Delete "${svc.name}"? This cannot be undone.`)) return;
+    setDeleteError('');
     const supabase = createClient();
-    await supabase.from('services').delete().eq('id', id);
+    const { error } = await supabase.from('services').delete().eq('id', svc.id);
+    if (error) {
+      setDeleteError(`Delete failed: ${error.message}`);
+      return;
+    }
     loadServices();
   }
 
@@ -98,6 +156,10 @@ export default function ServicesPage() {
           onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
         >+ Add Service</button>
       </div>
+
+      {deleteError && (
+        <p style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>{deleteError}</p>
+      )}
 
       {/* List */}
       {loading ? (
@@ -142,7 +204,7 @@ export default function ServicesPage() {
                     onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; }}
                     onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
                   >Edit</button>
-                  <button onClick={() => handleDelete(svc.id)} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'color-mix(in srgb, var(--red) 50%, transparent)', cursor: 'pointer', transition: 'color 0.12s' }}
+                  <button onClick={() => handleDelete(svc)} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'color-mix(in srgb, var(--red) 50%, transparent)', cursor: 'pointer', transition: 'color 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.color = 'var(--red)'; }}
                     onMouseLeave={e => { e.currentTarget.style.color = 'color-mix(in srgb, var(--red) 50%, transparent)'; }}
                   >Delete</button>

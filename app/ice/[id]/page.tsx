@@ -1,6 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 import { notFound } from 'next/navigation';
 
+// 24 hours after the incident the ICE card stops resolving — beyond that
+// window the medical info is rarely useful to a first responder and the URL
+// is too likely to have leaked (referer, browser sync, screenshot sharing).
+// A leaked QR thus expires automatically.
+const ICE_TTL_MS = 24 * 60 * 60 * 1000;
+
 // Server component — reads incident data for ICE card
 async function getIncident(id: string) {
   const supabase = createClient(
@@ -19,6 +25,14 @@ export default async function ICECardPage({ params }: { params: Promise<{ id: st
   const { id } = await params;
   const incident = await getIncident(id);
   if (!incident) notFound();
+
+  // Drop expired ICE cards. Use `notFound()` rather than a "expired" page so
+  // an enumerator can't tell whether an ID existed-but-aged-out vs never
+  // existed.
+  const createdAt = new Date(incident.created_at).getTime();
+  if (!Number.isFinite(createdAt) || Date.now() - createdAt > ICE_TTL_MS) {
+    notFound();
+  }
 
   const shortId = incident.id.slice(0, 8).toUpperCase();
 

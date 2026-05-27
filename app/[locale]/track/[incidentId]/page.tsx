@@ -12,6 +12,8 @@ import QRCode from 'react-qr-code';
 
 const MapWithNoSSR = dynamic(() => import('@/components/ResponderMap'), { ssr: false });
 
+type SmsStatusEntry = { name?: string; phone: string; sent: boolean };
+
 interface RawIncident {
   id: string;
   user_name?: string;
@@ -20,11 +22,19 @@ interface RawIncident {
   location?: { coordinates: [number, number] } | null;
   address?: string;
   status?: string;
-  sms_status?: any;
+  sms_status?: SmsStatusEntry[] | null;
   created_at: string;
   resolved_at?: string | null;
   resolution_note?: string | null;
 }
+
+// Map our human-readable language names to BCP-47 codes for Intl.* APIs.
+// Passing "Hindi" to toLocaleString silently falls back to the default locale;
+// passing "hi-IN" actually formats per the user's preferred language.
+const LOCALE_CODE: Record<string, string> = {
+  English: 'en-IN', Hindi: 'hi-IN', Tamil: 'ta-IN', Telugu: 'te-IN',
+  Kannada: 'kn-IN', Malayalam: 'ml-IN', Marathi: 'mr-IN',
+};
 
 export default function TrackPage() {
   const params = useParams();
@@ -45,29 +55,47 @@ export default function TrackPage() {
     const supabase = createClient();
     try {
       const { data, error: err } = await supabase.from('incidents').select('*').eq('id', incidentId).single();
-      if (err) throw err;
+      if (err) {
+        // Distinguish "no rows" (real 404) from transient errors so the user
+        // can tell whether to retry or give up.
+        const code = (err as { code?: string }).code;
+        if (code === 'PGRST116') setError(t('track.notFound'));
+        else setError(err.message || 'Failed to load incident');
+        return;
+      }
       setRaw(data as RawIncident);
-    } catch { setError(t('track.notFound')); }
-    finally { setLoading(false); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : t('track.notFound'));
+    } finally { setLoading(false); }
   }
 
   useEffect(() => {
     if (!incidentId) return;
     fetchIncident();
     const supabase = createClient();
+    // One channel for both responder GPS broadcasts AND incident UPDATEs —
+    // previously the page only watched broadcasts, so when the dispatcher
+    // marked it resolved on the dashboard the status here stayed "active"
+    // until the user manually refreshed.
     const channel = supabase.channel(`track-${incidentId}`)
-      .on('broadcast', { event: 'location-update' }, (msg: any) => {
-        // Supabase wraps user data in msg.payload — reading the outer object's
-        // fields directly returns undefined.
+      .on('broadcast', { event: 'location-update' }, (msg: { payload?: { responderId?: string; name?: string; lat?: number; lng?: number; responderType?: 'ambulance' | 'police' | 'fire' } }) => {
         const payload = msg?.payload;
         if (!payload?.responderId) return;
         if (!Number.isFinite(payload.lat) || !Number.isFinite(payload.lng)) return;
         setResponders(prev => {
           const idx = prev.findIndex(r => r.id === payload.responderId);
-          if (idx >= 0) { const next = [...prev]; next[idx] = { ...next[idx], lat: payload.lat, lng: payload.lng, updatedAt: Date.now() }; return next; }
-          return [...prev, { id: payload.responderId, name: payload.name || 'Responder', lat: payload.lat, lng: payload.lng, type: payload.responderType || 'ambulance', updatedAt: Date.now() }];
+          if (idx >= 0) { const next = [...prev]; next[idx] = { ...next[idx], lat: payload.lat as number, lng: payload.lng as number, updatedAt: Date.now() }; return next; }
+          return [...prev, { id: payload.responderId as string, name: payload.name || 'Responder', lat: payload.lat as number, lng: payload.lng as number, type: payload.responderType || 'ambulance', updatedAt: Date.now() }];
         });
-      }).subscribe();
+      })
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'incidents', filter: `id=eq.${incidentId}` },
+        (payload: { new?: Partial<RawIncident> }) => {
+          if (payload?.new) setRaw(prev => prev ? { ...prev, ...payload.new } : prev);
+        },
+      )
+      .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [incidentId]);
 
@@ -80,29 +108,43 @@ export default function TrackPage() {
     return [lat, lng];
   }, [raw?.location]);
 
+  const [actionError, setActionError] = useState('');
+
   async function handleResolve() {
     if (!raw) return;
     setResolving(true);
+    setActionError('');
     const supabase = createClient();
     const { error: err } = await supabase.from('incidents').update({
       status: 'resolved',
       resolved_at: new Date().toISOString(),
       resolution_note: noteInput.trim() || null,
     }).eq('id', incidentId);
-    if (!err) { setRaw(prev => prev ? { ...prev, status: 'resolved', resolved_at: new Date().toISOString(), resolution_note: noteInput.trim() || null } : prev); setShowNoteField(false); }
+    if (err) {
+      setActionError(`Resolve failed: ${err.message}`);
+    } else {
+      setRaw(prev => prev ? { ...prev, status: 'resolved', resolved_at: new Date().toISOString(), resolution_note: noteInput.trim() || null } : prev);
+      setShowNoteField(false);
+    }
     setResolving(false);
   }
 
   async function handleReopen() {
     if (!raw) return;
     setResolving(true);
+    setActionError('');
     const supabase = createClient();
     const { error: err } = await supabase.from('incidents').update({
       status: 'active',
       resolved_at: null,
       resolution_note: null,
     }).eq('id', incidentId);
-    if (!err) { setRaw(prev => prev ? { ...prev, status: 'active', resolved_at: null, resolution_note: null } : prev); setNoteInput(''); }
+    if (err) {
+      setActionError(`Re-open failed: ${err.message}`);
+    } else {
+      setRaw(prev => prev ? { ...prev, status: 'active', resolved_at: null, resolution_note: null } : prev);
+      setNoteInput('');
+    }
     setResolving(false);
   }
 
@@ -135,7 +177,8 @@ export default function TrackPage() {
   const isActive = raw.status !== 'resolved';
   const statusLabel = isActive ? t('track.sosActive') : t('track.sosResolved');
   const statusColor = isActive ? 'var(--red)' : 'var(--green)';
-  const timeStr = new Date(raw.created_at).toLocaleString(language === 'English' ? 'en-IN' : language);
+  const localeCode = LOCALE_CODE[language] ?? 'en-IN';
+  const timeStr = new Date(raw.created_at).toLocaleString(localeCode);
   const shortId = incidentId?.slice(0, 8).toUpperCase() || '';
 
   return (
@@ -203,6 +246,9 @@ export default function TrackPage() {
       {/* ─── Resolve / Reopen Section ─── */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '16px 20px' }}>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 12 }}>Incident Management</p>
+        {actionError && (
+          <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--red)', marginBottom: 10 }}>{actionError}</p>
+        )}
 
         {isActive ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -287,7 +333,7 @@ export default function TrackPage() {
           <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 8 }}>SMS Status</p>
           {raw.sms_status && Array.isArray(raw.sms_status) && raw.sms_status.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {raw.sms_status.map((s: any, i: number) => (
+              {raw.sms_status.map((s, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{s.name || s.phone}</span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: s.sent ? 'var(--green)' : 'var(--red)' }}>

@@ -28,7 +28,11 @@ function useContainerWidth(ref: React.RefObject<HTMLDivElement | null>) {
   const [width, setWidth] = useState(500);
   useEffect(() => {
     if (!ref.current) return;
-    const ro = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setWidth(entry.contentRect.width);
+    });
     ro.observe(ref.current);
     setWidth(ref.current.offsetWidth);
     return () => ro.disconnect();

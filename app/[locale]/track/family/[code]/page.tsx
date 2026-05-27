@@ -27,6 +27,8 @@ export default function FamilyTrackPage() {
   useEffect(() => {
     if (!code) return;
     const supabase = createClient();
+    let userId: string | null = null;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
 
     async function load() {
       // Look up the family link
@@ -40,6 +42,8 @@ export default function FamilyTrackPage() {
 
       // Check expiry
       if (new Date(link.expires_at) < new Date()) { setNotFound(true); setLoading(false); return; }
+
+      userId = link.user_id;
 
       // Get most recent incident for this user
       const { data: incident } = await supabase
@@ -66,16 +70,24 @@ export default function FamilyTrackPage() {
         });
       }
       setLoading(false);
+
+      // Realtime: subscribe ONLY to changes for THIS user_id. Subscribing
+      // here (after the link is resolved) lets us pass a server-side filter
+      // and avoids waking the page on every unrelated incident in the DB.
+      if (userId && !channel) {
+        channel = supabase.channel(`family-${code}`)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'incidents', filter: `user_id=eq.${userId}` },
+            () => load(),
+          )
+          .subscribe();
+      }
     }
 
     load();
 
-    // Realtime: re-fetch on any incident change for this user
-    const channel = supabase.channel(`family-${code}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'incidents' }, () => load())
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
+    return () => { if (channel) supabase.removeChannel(channel); };
   }, [code]);
 
   const mapCenter = status?.lat && status?.lng ? [status.lat, status.lng] as [number, number] : undefined;

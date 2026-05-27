@@ -38,12 +38,17 @@ export default function SOSPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim(), phone: phone.trim(), lat, lng }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed');
+      // The endpoint always returns JSON, but a 5xx HTML error page would
+      // crash response.json() — fall back to status text in that case so the
+      // user sees something useful instead of "Unexpected token < in JSON".
+      let data: { id?: string; error?: string } = {};
+      try { data = await res.json(); } catch { /* non-JSON response */ }
+      if (!res.ok) throw new Error(data.error || `Failed (HTTP ${res.status})`);
+      if (!data.id) throw new Error('Server did not return an incident id');
       setIncidentId(data.id);
       setStep('done');
-    } catch (err: any) {
-      setErrMsg(err.message);
+    } catch (err: unknown) {
+      setErrMsg(err instanceof Error ? err.message : 'Unknown error');
       setStep('error');
     }
   }

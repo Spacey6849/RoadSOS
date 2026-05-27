@@ -1,15 +1,25 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useLanguage } from '@/lib/i18n/LanguageProvider';
 import { createClient } from '@/lib/supabase/client';
 import { Mail, Lock, AlertCircle, Loader2, Shield } from 'lucide-react';
 
+// Only allow relative paths — same protection as auth/callback.
+function safeNext(raw: string | null, fallback: string): string {
+  if (!raw) return fallback;
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\')) return fallback;
+  return raw;
+}
+
 export default function LoginPage() {
   const { t } = useLanguage();
   const router = useRouter();
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const locale = (params?.locale as string) || 'en';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -30,13 +40,14 @@ export default function LoginPage() {
         password,
       });
       if (authError) throw authError;
-      router.push('/en/dashboard');
-    } catch (err: any) {
-      setError(
-        err.message === 'Invalid login credentials'
-          ? t('auth.invalidCredentials')
-          : err.message
-      );
+      // Use the user's current locale, and respect ?next=... set by the
+      // middleware redirect (so a logged-out click on /hi/admin lands back
+      // there after sign-in instead of dumping the user on /en/dashboard).
+      const next = safeNext(searchParams.get('next'), `/${locale}/dashboard`);
+      router.push(next);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg === 'Invalid login credentials' ? t('auth.invalidCredentials') : msg);
     } finally {
       setLoading(false);
     }
@@ -285,7 +296,7 @@ export default function LoginPage() {
         {/* Footer Links */}
         <div style={{ textAlign: 'center', marginTop: 20 }}>
           <Link
-            href="/en/signup"
+            href={`/${locale}/signup`}
             style={{
               color: 'var(--text-secondary)',
               fontSize: 14,
@@ -306,7 +317,7 @@ export default function LoginPage() {
         </div>
         <div style={{ textAlign: 'center', marginTop: 10 }}>
           <Link
-            href="/en/dashboard"
+            href={`/${locale}/dashboard`}
             style={{
               color: 'var(--text-tertiary)',
               fontSize: 13,
