@@ -35,7 +35,7 @@ export async function executeTool(
   args: Record<string, unknown>
 ): Promise<string> {
   if (!args || typeof args !== 'object') {
-    console.warn(`[tools] executeTool called with invalid args for ${toolName}`);
+    if (__DEV__) console.warn(`[tools] executeTool called with invalid args for ${toolName}`);
     return `Error: Invalid arguments for tool ${toolName}`;
   }
   switch (toolName) {
@@ -49,7 +49,7 @@ export async function executeTool(
       return formatSearchResultsForLLM(results);
     }
     default:
-      console.warn(`[tools] Unknown tool: ${toolName}`);
+      if (__DEV__) console.warn(`[tools] Unknown tool: ${toolName}`);
       return `Unknown tool: ${toolName}`;
   }
 }

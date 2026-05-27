@@ -167,7 +167,7 @@ export async function saveServicesCache(
   try {
     await AsyncStorage.setItem(key, JSON.stringify(entry));
   } catch (e) {
-    console.warn('Storage write failed', e);
+    if (__DEV__) console.warn('Storage write failed', e);
   }
 }
 
@@ -204,7 +204,7 @@ export async function clearServicesCache(region: string): Promise<void> {
   try {
     await AsyncStorage.removeItem(key);
   } catch (e) {
-    console.warn('Storage clear failed', e);
+    if (__DEV__) console.warn('Storage clear failed', e);
   }
 }
 
@@ -241,11 +241,19 @@ function haversine(lat1: number, lng1: number, lat2: number, lng2: number): numb
 
 /**
  * Loads the user profile from AsyncStorage.
+ * Validates that the parsed value is a plain object before returning — guards
+ * against corrupted storage or stale migration shapes that would otherwise
+ * crash callers doing things like `profile.medicalInfo.allergies`.
  */
 export async function getUserProfile() {
   try {
     const raw = await AsyncStorage.getItem('roadsos_user_profile');
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -258,17 +266,29 @@ export async function saveUserProfile(profile: UserProfile) {
   try {
     await AsyncStorage.setItem('roadsos_user_profile', JSON.stringify(profile));
   } catch (e) {
-    console.warn('Storage write failed', e);
+    if (__DEV__) console.warn('Storage write failed', e);
   }
 }
 
 /**
  * Loads the list of emergency contacts from AsyncStorage.
+ * Always returns an array — corrupted/non-array storage values become [] so
+ * `contacts.length === 0` and `.map(...)` in callers stay safe.
  */
-export async function getEmergencyContacts() {
+export async function getEmergencyContacts(): Promise<EmergencyContact[]> {
   try {
     const raw = await AsyncStorage.getItem('roadsos_emergency_contacts');
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // Filter out any entries that don't match the expected shape — easier
+    // than crashing on the SOS hot path because of one stale row.
+    return parsed.filter((c): c is EmergencyContact =>
+      c && typeof c === 'object' &&
+      typeof c.id === 'string' &&
+      typeof c.name === 'string' &&
+      typeof c.phone === 'string'
+    );
   } catch {
     return [];
   }
@@ -281,7 +301,7 @@ export async function saveEmergencyContacts(contacts: EmergencyContact[]) {
   try {
     await AsyncStorage.setItem('roadsos_emergency_contacts', JSON.stringify(contacts));
   } catch (e) {
-    console.warn('Storage write failed', e);
+    if (__DEV__) console.warn('Storage write failed', e);
   }
 }
 
@@ -291,13 +311,14 @@ export async function saveEmergencyContacts(contacts: EmergencyContact[]) {
 export async function saveIncident(incident: Incident) {
   try {
     const raw = await AsyncStorage.getItem('roadsos_incidents');
-    const incidents: Incident[] = raw ? JSON.parse(raw) : [];
+    const parsed = raw ? JSON.parse(raw) : [];
+    const incidents: Incident[] = Array.isArray(parsed) ? parsed : [];
     const exists = incidents.some((i) => i.id === incident.id);
     if (exists) return;
     incidents.unshift(incident);
     await AsyncStorage.setItem('roadsos_incidents', JSON.stringify(incidents.slice(0, 20)));
   } catch (e) {
-    console.warn('[offline-cache] saveIncident failed:', e);
+    if (__DEV__) console.warn('[offline-cache] saveIncident failed:', e);
   }
 }
 
@@ -307,8 +328,10 @@ export async function saveIncident(incident: Incident) {
 export async function getIncident(id: string): Promise<Incident | null> {
   try {
     const raw = await AsyncStorage.getItem('roadsos_incidents');
-    const incidents: Incident[] = raw ? JSON.parse(raw) : [];
-    return incidents.find((i) => i.id === id) ?? null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return (parsed as Incident[]).find((i) => i && i.id === id) ?? null;
   } catch {
     return null;
   }

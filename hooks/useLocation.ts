@@ -42,10 +42,14 @@ export function useLocation() {
             if (shouldGeocode) {
               try {
                 const loc = await enrichLocation(lat, lng);
+                // Re-check mounted after the await — the screen may have
+                // unmounted while reverseGeocodeAsync was in flight.
+                if (!mounted) return;
                 lastGeocodeRef.current = { lat, lng, time: now };
                 setLocation(loc);
               } catch (err) {
-                console.error('[useLocation] enrichLocation failed:', err);
+                if (!mounted) return;
+                if (__DEV__) console.error('[useLocation] enrichLocation failed:', err);
                 setLocation({ lat, lng, timestamp: Date.now() });
               }
             } else {
@@ -53,9 +57,9 @@ export function useLocation() {
             }
           }
         );
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (mounted) {
-          setError(err.message || 'Location error');
+          setError(err instanceof Error ? err.message : 'Location error');
         }
       }
     })();
@@ -73,8 +77,8 @@ export function useLocation() {
       });
       const loc = await enrichLocation(pos.coords.latitude, pos.coords.longitude);
       setLocation(loc);
-    } catch (err: any) {
-      setError(err.message || 'Location refresh failed');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Location refresh failed');
     }
   }
 

@@ -70,7 +70,7 @@ function getBeepWav(): string {
     try {
       beepWavBase64 = generateBeepWav();
     } catch (err) {
-      console.error('[alarm] generateBeepWav failed:', err);
+      if (__DEV__) console.error('[alarm] generateBeepWav failed:', err);
       beepWavBase64 = '';
     }
   }
@@ -90,7 +90,7 @@ export async function playAlarm() {
     );
     sound = s;
   } catch (err) {
-    console.error('[alarm] playAlarm failed:', err);
+    if (__DEV__) console.error('[alarm] playAlarm failed:', err);
   }
 }
 

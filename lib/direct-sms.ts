@@ -1,4 +1,4 @@
-import { Linking, NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import { AppState, Linking, NativeModules, PermissionsAndroid, Platform } from 'react-native';
 
 /**
  * Native bridge to the Kotlin DirectSmsModule (see android/app/.../DirectSmsModule.kt).
@@ -23,9 +23,17 @@ export const isDirectSmsSupported = Platform.OS === 'android' && native != null;
 export type SmsPermissionResult = 'granted' | 'denied' | 'blocked';
 
 // In-session cache: once we know SEND_SMS is granted, skip the native bridge
-// round-trip on every subsequent SOS. Resets on app restart, which naturally
-// catches the case where the user revoked the permission via system Settings.
+// round-trip on every subsequent SOS. Resets on app restart, AND on every
+// foreground transition — covers the case where the user revoked the
+// permission via system Settings while the app was backgrounded, which the
+// old "reset on PERMISSION_DENIED reply" path only caught AFTER a failed send.
 let _grantedCache = false;
+
+if (Platform.OS === 'android') {
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') _grantedCache = false;
+  });
+}
 
 /**
  * Ask for SEND_SMS at runtime. On API 23+ Android requires a runtime grant in

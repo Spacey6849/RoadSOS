@@ -2,7 +2,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ── Model catalogue ───────────────────────────────────────────────────────────
 
-export type ModelVariant = 'llama32_1b' | 'llama32_3b' | 'roadsos_1b_finetuned' | 'roadsos_3b_finetuned';
+// `roadsos_1b_finetuned` used to live here but its downloadUrl was still a
+// placeholder ('YOUR_HF_USERNAME/...'). Removed from the catalogue so the UI
+// can't offer a model that 404s on download. Re-add when a real GGUF is
+// uploaded to HuggingFace.
+export type ModelVariant = 'llama32_1b' | 'llama32_3b' | 'roadsos_3b_finetuned';
 
 export const MODELS: Record<
   ModelVariant,
@@ -25,16 +29,6 @@ export const MODELS: Record<
     filename: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
     downloadUrl:
       'https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
-  },
-  roadsos_1b_finetuned: {
-    name: 'RoadSoS 1B (Fine-tuned)',
-    description: 'Fine-tuned locally on GTX 1650 — fast, ~770 MB, trained on 210+ road-safety Q&A pairs',
-    sizeLabel: '~770 MB',
-    sizeBytes: 808_000_000,
-    filename: 'roadsos-1b-Q4_K_M.gguf',
-    // Replace after running training/local_train_gtx1650.py and uploading to HuggingFace
-    downloadUrl: 'https://huggingface.co/YOUR_HF_USERNAME/roadsos-1b-road-safety/resolve/main/roadsos-1b-Q4_K_M.gguf',
-    isFinetuned: true,
   },
   roadsos_3b_finetuned: {
     name: 'RoadSoS 3B (Fine-tuned)',
@@ -207,7 +201,11 @@ export async function getSelectedVariant(): Promise<ModelVariant | null> {
   // necessary; we just retarget the variant pointer.
   if (v === 'e2b') return 'llama32_1b';
   if (v === 'e4b') return 'llama32_3b';
-  if (v === 'llama32_1b' || v === 'llama32_3b' || v === 'roadsos_1b_finetuned' || v === 'roadsos_3b_finetuned') return v;
+  // Legacy: roadsos_1b_finetuned was removed from the catalogue (placeholder
+  // download URL). Anyone who somehow saved that key gets retargeted to the
+  // base Llama 3.2 1B — same size class, real download URL.
+  if (v === 'roadsos_1b_finetuned') return 'llama32_1b';
+  if (v === 'llama32_1b' || v === 'llama32_3b' || v === 'roadsos_3b_finetuned') return v;
   return null;
 }
 
@@ -240,7 +238,7 @@ export async function reconcileModelState(): Promise<ModelState> {
     return 'none';
   }
   if (!(await isModelDownloaded(variant))) {
-    console.warn('[local-llm] state=ready but model file missing/truncated — resetting to none');
+    if (__DEV__) console.warn('[local-llm] state=ready but model file missing/truncated — resetting to none');
     await saveModelState('none');
     return 'none';
   }
@@ -400,7 +398,7 @@ export async function startOrResumeDownload(
       emit();
       resumed = true;
     } catch (err) {
-      console.warn('[local-llm] resume reconstruction failed, starting fresh:', err);
+      if (__DEV__) console.warn('[local-llm] resume reconstruction failed, starting fresh:', err);
       try { await fs.deleteAsync(path); } catch { /* file may not exist yet */ }
       await clearResume();
     }
@@ -527,7 +525,7 @@ export async function resumePendingDownload(): Promise<boolean> {
   const savedVariant = await AsyncStorage.getItem(DOWNLOADING_VARIANT_KEY);
   if (!savedVariant) return false;
   void startOrResumeDownload(savedVariant as ModelVariant).catch((err) => {
-    console.warn('[local-llm] auto-resume failed:', err);
+    if (__DEV__) console.warn('[local-llm] auto-resume failed:', err);
   });
   return true;
 }
@@ -650,7 +648,7 @@ export async function initLocalLLM(variant: ModelVariant): Promise<boolean> {
       if (!fs) return false;
       const info = await fs.getInfoAsync(modelPath);
       if (!info.exists) {
-        console.warn('[local-llm] init aborted — model file missing at', modelPath);
+        if (__DEV__) console.warn('[local-llm] init aborted — model file missing at', modelPath);
         // Self-heal: drop the stale 'ready' marker so the UI prompts a fresh
         // download instead of looping the same failed init every chat session.
         await saveModelState('none').catch(() => {});
@@ -666,7 +664,7 @@ export async function initLocalLLM(variant: ModelVariant): Promise<boolean> {
       });
       return _ctx !== null;
     } catch (err) {
-      console.error('[local-llm] initLocalLLM failed:', err);
+      if (__DEV__) console.error('[local-llm] initLocalLLM failed:', err);
       // initLlama threw — likely a corrupt file or an unsupported runtime on
       // this device. Mark as errored so the chat screen can tell the user
       // honestly instead of silently retrying every time.
@@ -734,7 +732,7 @@ export async function* streamLocalLLM(
     )
     .catch((err) => {
       completionError = err instanceof Error ? err : new Error(String(err));
-      console.error('[local-llm] completion failed:', completionError);
+      if (__DEV__) console.error('[local-llm] completion failed:', completionError);
     })
     .finally(() => {
       _completionInProgress = false;
@@ -778,7 +776,7 @@ export async function warmupLocalLLM(): Promise<void> {
     if (!variant || isLLMReady()) return;
     await initLocalLLM(variant);
   } catch (err) {
-    console.warn('[local-llm] warmupLocalLLM failed:', err);
+    if (__DEV__) console.warn('[local-llm] warmupLocalLLM failed:', err);
   }
 }
 

@@ -110,11 +110,11 @@ export function useResponderTracking(options: UseResponderTrackingOptions = {}) 
       };
 
       ws.onerror = (e) => {
-        console.error('[useResponderTracking] WebSocket error:', e);
+        if (__DEV__) console.error('[useResponderTracking] WebSocket error:', e);
       };
     } catch (err) {
       // WebSocket creation might throw synchronously e.g. for security policies on release builds
-      console.warn("WebSocket creation failed", err);
+      if (__DEV__) console.warn("WebSocket creation failed", err);
     }
   }, [serverUrl]);
 

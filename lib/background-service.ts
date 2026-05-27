@@ -120,6 +120,6 @@ export async function fireCrashNotification(): Promise<void> {
       trigger: null,
     });
   } catch (err) {
-    console.warn('[bg-service] fireCrashNotification failed:', err);
+    if (__DEV__) console.warn('[bg-service] fireCrashNotification failed:', err);
   }
 }

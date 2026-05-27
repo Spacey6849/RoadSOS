@@ -58,7 +58,7 @@ export function useVideoStream(roomId: string | null) {
         }));
         return camera === PermissionsAndroid.RESULTS.GRANTED;
       } catch (err) {
-        console.error('[useVideoStream] Permission request failed:', err);
+        if (__DEV__) console.error('[useVideoStream] Permission request failed:', err);
         setState(prev => ({ ...prev, error: 'Permission request failed' }));
         return false;
       }
@@ -203,7 +203,7 @@ export function useVideoStream(roomId: string | null) {
               break;
           }
         } catch (err) {
-          console.error('[useVideoStream] Message parse error:', err);
+          if (__DEV__) console.error('[useVideoStream] Message parse error:', err);
         }
       };
 
@@ -212,12 +212,12 @@ export function useVideoStream(roomId: string | null) {
       };
 
       ws.onerror = (e) => {
-        console.error('[useVideoStream] WebSocket error:', e);
+        if (__DEV__) console.error('[useVideoStream] WebSocket error:', e);
         setState(prev => ({ ...prev, error: 'Connection error' }));
       };
 
     } catch (err) {
-      console.error('[useVideoStream] startStream failed:', err);
+      if (__DEV__) console.error('[useVideoStream] startStream failed:', err);
       setState(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Unknown error', isStreaming: false }));
     }
   }, [requestPermissions, cleanup]);

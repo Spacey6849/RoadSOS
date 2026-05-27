@@ -120,6 +120,10 @@ export default function HomeScreen() {
   const locationRef = useRef<LocationData | null>(null);
   const servicesRef = useRef<NearbyService[]>([]);
   const appState = useRef<AppStateStatus>('active');
+  // Per-crash log row id — used by resolveCrashLog so concurrent crashes
+  // don't clobber each other's outcome (formerly a module-level singleton
+  // in crash-logger.ts which orphaned the first crash on rapid double-fire).
+  const pendingCrashLogIdRef = useRef<string | null>(null);
 
   locationRef.current = location;
   servicesRef.current = services;
@@ -195,27 +199,43 @@ export default function HomeScreen() {
   }, [profile?.crashDetectionEnabled]);
 
   // Track AppState — when returning from background check for pending crash events
+  // AND re-sync native SharedPreferences (contacts may have changed in Settings
+  // while we were backgrounded; the native crash service reads from prefs).
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (nextState) => {
       const prev = appState.current;
       appState.current = nextState;
 
-      // iOS only: JS owns background crash handling. On Android the native
-      // foreground service runs the countdown + SOS end-to-end while the app
-      // is away — there is nothing for JS to resume.
+      // On every active transition: refresh native SharedPreferences with the
+      // latest contacts + profile name. storeContactsNative / storeUserNameNative
+      // no-op on iOS, so this is cheap there.
+      if (prev !== 'active' && nextState === 'active') {
+        getUserProfile().then((p) => {
+          if (p?.name) storeUserNameNative(p.name).catch(() => {});
+        }).catch(() => {});
+        getEmergencyContacts().then((contacts) => {
+          storeContactsNative(contacts.map((c) => c.phone), contacts.map((c) => c.name)).catch(() => {});
+        }).catch(() => {});
+      }
+
+      // iOS only below: JS owns background crash handling. On Android the
+      // native foreground service runs the countdown + SOS end-to-end while
+      // the app is away — there is nothing for JS to resume.
       if (isNativeCrashServiceAvailable) return;
       // App came back to foreground — check if a crash was stored while hidden
       if (prev !== 'active' && nextState === 'active') {
         const hasPending = await consumePendingCrash();
         if (hasPending && !countdownVisible) {
-          logCrashDetected(mode, profile?.crashSensitivity ?? 'medium', gForce, jerkGs, locationRef.current).catch(() => {});
+          logCrashDetected(mode, profile?.crashSensitivity ?? 'medium', gForce, jerkGs, locationRef.current)
+            .then((id) => { pendingCrashLogIdRef.current = id; })
+            .catch(() => {});
           setCountdown(15);
           setCountdownVisible(true);
         }
       }
     });
     return () => sub.remove();
-  }, [countdownVisible, mode, gForce, jerkGs]);
+  }, [countdownVisible, mode, gForce, jerkGs, profile?.crashSensitivity]);
 
   // "Send SOS now" — skip the rest of the countdown. On Android the native
   // service owns SMS + crash log, so tell it to fire immediately; on iOS, JS
@@ -230,7 +250,9 @@ export default function HomeScreen() {
       sendNativeSosNow().catch(() => {});
       return;
     }
-    resolveCrashLog('sos_sent').catch(() => {});
+    const sosLogId = pendingCrashLogIdRef.current;
+    pendingCrashLogIdRef.current = null;
+    resolveCrashLog(sosLogId, 'sos_sent').catch(() => {});
     const currentLocation = locationRef.current;
     if (!currentLocation) {
       Alert.alert('Location unavailable', 'RoadSoS detected impact, but GPS is not ready. Call 112 if you need immediate help.');
@@ -255,14 +277,18 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!isCrashDetected || countdownVisible) return;
 
-    // Always log to Supabase regardless of foreground/background
+    // Always log to Supabase regardless of foreground/background. Store the
+    // returned id so resolveCrashLog can update outcome later without relying
+    // on module-level state (which would clobber under rapid double-fire).
     logCrashDetected(
       mode,
       profile?.crashSensitivity ?? 'medium',
       gForce,
       jerkGs,
       locationRef.current,
-    ).catch(() => {});
+    )
+      .then((id) => { pendingCrashLogIdRef.current = id; })
+      .catch(() => {});
 
     if (appState.current !== 'active') {
       // In background: store pending crash + fire alert notification (native service already vibrated)
@@ -272,7 +298,7 @@ export default function HomeScreen() {
       setCountdown(15);
       setCountdownVisible(true);
     }
-  }, [isCrashDetected, countdownVisible]);
+  }, [isCrashDetected, countdownVisible, mode, gForce, jerkGs, profile?.crashSensitivity]);
 
   useEffect(() => {
     if (!countdownVisible) return;
@@ -310,7 +336,9 @@ export default function HomeScreen() {
       // service still auto-sends the SOS ~15s after impact.
       cancelNativeCountdown().catch(() => {});
     } else {
-      resolveCrashLog('cancelled').catch(() => {});
+      const cancelledId = pendingCrashLogIdRef.current;
+      pendingCrashLogIdRef.current = null;
+      resolveCrashLog(cancelledId, 'cancelled').catch(() => {});
     }
   }
 

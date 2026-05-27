@@ -34,7 +34,7 @@ export async function setupNotifications(): Promise<boolean> {
     const { status } = await N.requestPermissionsAsync();
     return status === 'granted';
   } catch (err) {
-    console.error('[notifications] setupNotifications failed:', err);
+    if (__DEV__) console.error('[notifications] setupNotifications failed:', err);
     return false;
   }
 }
@@ -51,6 +51,6 @@ export async function sendLocalNotification(title: string, body: string, data?: 
       trigger: null,
     });
   } catch (err) {
-    console.error('[notifications] sendLocalNotification failed:', err);
+    if (__DEV__) console.error('[notifications] sendLocalNotification failed:', err);
   }
 }

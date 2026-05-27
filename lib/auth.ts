@@ -7,7 +7,7 @@ export async function signIn(email: string, password: string) {
   try {
     await syncFromCloud();
   } catch (err) {
-    console.error('[auth] syncFromCloud failed during signIn:', err);
+    if (__DEV__) console.error('[auth] syncFromCloud failed during signIn:', err);
   }
   return data;
 }

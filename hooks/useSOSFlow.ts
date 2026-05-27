@@ -107,6 +107,17 @@ export function useSOSFlow() {
         }
 
         router.push(`/incident/${incidentId}`);
+      } catch (err) {
+        // On the safety-critical SOS path, silent failure is worse than a
+        // user-facing error. Show an actionable Alert pointing at 112 so the
+        // user knows the in-app SOS didn't go through.
+        if (__DEV__) console.error('[useSOSFlow] triggerSOS failed:', err);
+        const reason = err instanceof Error ? err.message : 'unknown error';
+        Alert.alert(
+          'SOS Failed',
+          `RoadSoS couldn't complete the SOS (${reason}). Call 112 immediately if you need help.`,
+          [{ text: 'OK' }]
+        );
       } finally {
         isTriggeringRef.current = false;
         setIsTriggering(false);

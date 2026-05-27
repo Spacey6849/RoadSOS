@@ -33,13 +33,22 @@ export function useNearbyServices(
   const [dataSource, setDataSource] = useState<UseNearbyServicesResult['dataSource']>('seed');
   const sequenceRef = useRef(0);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // When a debounced call is superseded, resolve its promise immediately so
+  // callers that `await refresh()` don't hang forever on the stale one.
+  const pendingResolveRef = useRef<(() => void) | null>(null);
 
   const fetchServices = useCallback(async () => {
     if (lat == null || lng == null) return;
 
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    // Resolve the previous pending promise (superseded) before arming a new one.
+    if (pendingResolveRef.current) {
+      pendingResolveRef.current();
+      pendingResolveRef.current = null;
+    }
 
     return new Promise<void>((resolve) => {
+      pendingResolveRef.current = resolve;
       debounceTimerRef.current = setTimeout(async () => {
         const detectedRegion = detectRegion(lat, lng);
         setRegion(detectedRegion);
@@ -92,7 +101,7 @@ export function useNearbyServices(
       throw new Error('No POI data from Overpass');
     } catch (err) {
       if (seq !== sequenceRef.current) return;
-      console.error('[useNearbyServices] Fetch failed:', err);
+      if (__DEV__) console.error('[useNearbyServices] Fetch failed:', err);
       const cached = await loadServicesCache(detectedRegion.key);
       if (cached && cached.services.length > 0 && !cached.isExpired) {
         const withDist = computeDistances(cached.services, lat, lng);
@@ -119,6 +128,11 @@ export function useNearbyServices(
     } finally {
       if (seq === sequenceRef.current) {
         setIsLoading(false);
+      }
+      // Only resolve if this timer is still the active one (otherwise the
+      // supersession above already resolved it).
+      if (pendingResolveRef.current === resolve) {
+        pendingResolveRef.current = null;
       }
       resolve();
     }

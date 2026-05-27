@@ -12,14 +12,14 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 export default function RootLayout() {
   useEffect(() => {
     setupNotifications().catch((err) => {
-      console.error('[RootLayout] Notification setup failed:', err);
+      if (__DEV__) console.error('[RootLayout] Notification setup failed:', err);
     });
     setupServiceChannel().catch(() => {});
     // If a model download was interrupted last session, pick it back up from
     // the persisted resume token. Runs in the background and just updates the
     // global download state — any screen that subscribes will see progress.
     resumePendingDownload().catch((err) => {
-      console.warn('[RootLayout] resumePendingDownload failed:', err);
+      if (__DEV__) console.warn('[RootLayout] resumePendingDownload failed:', err);
     });
     // Pre-load the on-device LLM in the background so the chat screen doesn't
     // pay the 30-90s GGUF-load cost on first open. Self-heals stale state if

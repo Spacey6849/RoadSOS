@@ -24,7 +24,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('[ErrorBoundary] caught:', error, errorInfo);
+    if (__DEV__) console.error('[ErrorBoundary] caught:', error, errorInfo);
   }
 
   override render() {

@@ -298,7 +298,15 @@ export default function ChatScreen() {
       // they know to toggle back to cloud or reload the model.
       if (!final) {
         if (forceLocal) {
-          const why = reasons[0] ? reasons[0].replace(/^local: /, '') : 'no response from on-device model';
+          // Sanitize the reason: strip any API keys / tokens / long hex blobs
+          // that may have leaked into the underlying error message, and cap
+          // the length so a stack trace can't dump into the chat bubble.
+          const raw = reasons[0] ? reasons[0].replace(/^local: /, '') : 'no response from on-device model';
+          const sanitized = raw
+            .replace(/\b(gsk_|sk-|sb_|AIza|eyJ)[A-Za-z0-9_.-]{10,}/g, '<redacted>')
+            .replace(/\s+/g, ' ')
+            .slice(0, 140);
+          const why = sanitized || 'no response from on-device model';
           final =
             `On-device model couldn't answer (${why}).\n\n` +
             `Tap the toggle in the header to switch back to cloud, ` +
@@ -322,7 +330,9 @@ export default function ChatScreen() {
   );
 
   const tier = pickTier();
-  const shortModelName = localModelName.split('(')[0].trim();
+  // `noUncheckedIndexedAccess` makes [0] `string | undefined`; split() always
+  // returns at least one element so the ?? is belt-and-braces, not a real path.
+  const shortModelName = (localModelName.split('(')[0] ?? localModelName).trim();
   const tierLabel = tier === 'cloud' ? 'Online · Llama 3.3' : tier === 'local' ? `Offline · ${shortModelName}` : 'Offline · First aid';
   const tierTone: 'green' | 'indigo' | 'amber' = tier === 'cloud' ? 'green' : tier === 'local' ? 'indigo' : 'amber';
 

@@ -101,7 +101,7 @@ export async function sendSOS(
         statuses = statuses.map((s) => ({ ...s, error: 'SEND_SMS permission denied' }));
       }
     } catch (err) {
-      console.warn('[sms] direct send failed, falling back to composer:', err);
+      if (__DEV__) console.warn('[sms] direct send failed, falling back to composer:', err);
     }
   }
 
@@ -121,7 +121,12 @@ export async function sendSOS(
             s.deviceSent ? s : { ...s, error: s.error ?? 'User cancelled SMS' },
           );
         } else {
-          statuses = statuses.map((s) => (s.deviceSent ? s : { ...s, deviceSent: true }));
+          // Anything else (unknown SDK result, malformed response) is NOT a
+          // success. Marking it `deviceSent: true` would silently lie about
+          // delivery on the safety-critical SOS path.
+          statuses = statuses.map((s) =>
+            s.deviceSent ? s : { ...s, error: s.error ?? `SMS composer returned ${result?.result ?? 'unknown'}` },
+          );
         }
       }
     } catch {
