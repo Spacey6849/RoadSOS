@@ -1,5 +1,6 @@
 package com.roadsos.mobile
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -15,19 +17,21 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.telephony.SmsManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.ReactContext
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -60,6 +64,14 @@ class CrashDetectionService : Service(), SensorEventListener {
         const val PREF_LOCATION_LNG    = "last_lng"
         const val PREF_LOCATION_ADDR   = "last_addr"
         const val PREF_USER_NAME       = "user_name"
+        const val PREF_BLOOD_GROUP     = "blood_group"
+        const val PREF_ALLERGIES       = "allergies"
+        const val PREF_MEDICATIONS     = "medications"
+        const val PREF_CONDITIONS      = "conditions"
+        // Last-known config — restored when Android restarts the sticky
+        // service with a null intent (OOM kill / process death).
+        private const val PREF_LAST_MODE        = "last_mode"
+        private const val PREF_LAST_SENSITIVITY = "last_sensitivity"
 
         const val EVENT_CRASH_DETECTED = "RoadSoSCrashDetected"
 
@@ -87,7 +99,6 @@ class CrashDetectionService : Service(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
-    private var wakeLock: PowerManager.WakeLock? = null
     private var vibrator: Vibrator? = null
 
     // ── Mode ──────────────────────────────────────────────────────────────
@@ -109,7 +120,17 @@ class CrashDetectionService : Service(), SensorEventListener {
 
     private val countdownHandler = Handler(Looper.getMainLooper())
     private var countdownRemaining = 0
-    private var countdownActive = false
+    @Volatile private var countdownActive = false
+    // Set the instant a cancel is requested. Read from inside the background
+    // executeSOS() thread to abort the SMS / HTTP calls when a cancel arrives
+    // in the millisecond gap between countdown=0 and the network round-trip.
+    @Volatile private var cancelled = false
+
+    // Snapshot of the crash impact — captured in dispatchCrash() and reused
+    // in executeSOS() / recordOutcome() so both paths report identical g_force
+    // and jerk values regardless of subsequent sensor samples.
+    @Volatile private var impactGForce = 0f
+    @Volatile private var impactJerkGs = 0f
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -129,7 +150,7 @@ class CrashDetectionService : Service(), SensorEventListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                cancelCountdown()
+                cancelCountdown(recordOutcome = false)
                 vibrator?.cancel()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -140,7 +161,7 @@ class CrashDetectionService : Service(), SensorEventListener {
                 return START_STICKY
             }
             ACTION_CANCEL_COUNTDOWN -> {
-                cancelCountdown()
+                cancelCountdown(recordOutcome = true)
                 return START_STICKY
             }
             ACTION_SEND_NOW -> {
@@ -161,20 +182,30 @@ class CrashDetectionService : Service(), SensorEventListener {
             ACTION_UPDATE -> {
                 intent.getStringExtra(EXTRA_MODE)?.let        { mode        = it }
                 intent.getStringExtra(EXTRA_SENSITIVITY)?.let { sensitivity = it }
+                persistConfig()
                 startForeground(NOTIF_ID_SERVICE, buildServiceNotification())
                 return START_STICKY
             }
             else -> {
-                intent?.getStringExtra(EXTRA_MODE)?.let        { mode        = it }
-                intent?.getStringExtra(EXTRA_SENSITIVITY)?.let { sensitivity = it }
+                // Real start OR Android-triggered restart with a null intent
+                // (OOM-kill recovery). On null intent, fall back to the last
+                // mode/sensitivity from prefs instead of resetting to defaults.
+                if (intent == null) {
+                    restoreConfig()
+                } else {
+                    intent.getStringExtra(EXTRA_MODE)?.let        { mode        = it }
+                    intent.getStringExtra(EXTRA_SENSITIVITY)?.let { sensitivity = it }
+                    persistConfig()
+                }
             }
         }
 
         startForeground(NOTIF_ID_SERVICE, buildServiceNotification())
 
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "roadsos:crash_detection")
-            .apply { acquire(12 * 60 * 60 * 1000L) }
+        // No wakeLock: the foreground service (type=health) already gets CPU
+        // time per its lifecycle. A multi-hour PARTIAL_WAKE_LOCK on top of
+        // that is redundant and trips OEM battery-saver UIs (Xiaomi, OnePlus,
+        // One UI) which then offer to kill the app.
 
         accelerometer?.also { sensor ->
             sensorManager.registerListener(this, sensor, UPDATE_INTERVAL_US)
@@ -183,10 +214,23 @@ class CrashDetectionService : Service(), SensorEventListener {
         return START_STICKY
     }
 
+    private fun persistConfig() {
+        getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_LAST_MODE, mode)
+            .putString(PREF_LAST_SENSITIVITY, sensitivity)
+            .apply()
+    }
+
+    private fun restoreConfig() {
+        val prefs = getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+        mode        = prefs.getString(PREF_LAST_MODE, mode) ?: mode
+        sensitivity = prefs.getString(PREF_LAST_SENSITIVITY, sensitivity) ?: sensitivity
+    }
+
     override fun onDestroy() {
-        cancelCountdown()
+        cancelCountdown(recordOutcome = false)
         sensorManager.unregisterListener(this)
-        wakeLock?.let { if (it.isHeld) it.release() }
         vibrator?.cancel()
         super.onDestroy()
     }
@@ -245,6 +289,13 @@ class CrashDetectionService : Service(), SensorEventListener {
     // ── Crash dispatch ────────────────────────────────────────────────────
 
     private fun dispatchCrash() {
+        // Reset cancel flag and snapshot the impact magnitude so the eventual
+        // executeSOS() / outcome-record uses the values at the moment of
+        // impact, not whatever the sensor reads N seconds later.
+        cancelled    = false
+        impactGForce = lastGForce
+        impactJerkGs = lastJerkGs
+
         // Persist timestamp so JS can also pick it up on resume
         getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
             .edit()
@@ -290,27 +341,54 @@ class CrashDetectionService : Service(), SensorEventListener {
         }, 1000L)
     }
 
-    private fun cancelCountdown() {
+    /**
+     * @param recordOutcome  When the user explicitly cancelled the countdown
+     *   we POST a crash_logs row with outcome='cancelled' so the dashboard
+     *   can see false-positive signals (useful for tuning sensitivity).
+     *   When the service is being torn down (ACTION_STOP / onDestroy) we
+     *   skip the record so we don't spam rows on shutdown.
+     */
+    private fun cancelCountdown(recordOutcome: Boolean) {
+        // Set the flag FIRST so any in-flight executeSOS() background thread
+        // sees it before reaching its SMS / HTTP gates.
+        cancelled = true
+        val wasActive = countdownActive
         countdownActive = false
         countdownHandler.removeCallbacksAndMessages(null)
         vibrator?.cancel()
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(NOTIF_ID_CRASH)
         showResultNotification("SOS Cancelled", "Crash alert stopped. Stay safe.", false)
+        // Only post the cancelled record if a countdown was actually running
+        // — otherwise the user tapped Cancel on a non-existent crash.
+        if (recordOutcome && wasActive) {
+            Thread { sendCrashLogToSupabase(outcome = "cancelled") }.start()
+        }
     }
 
     // ── SOS execution (runs when countdown hits 0) ─────────────────────────
 
     private fun executeSOS() {
+        // Race window: countdownActive=false was set by the tick handler at
+        // T-0, but a Cancel intent can land between that and this method.
+        // Short-circuit if the user beat us to it.
+        if (cancelled) return
         vibrator?.cancel()
 
         // Run network + SMS on a background thread
         Thread {
-            val logSent = sendCrashLogToSupabase()
-            val smsSent = sendEmergencySMS()
+            // Re-check at each gate — a Cancel intent during these network
+            // calls should still abort downstream side effects.
+            if (cancelled) return@Thread
+            val logSent = sendCrashLogToSupabase(outcome = "sos_sent")
+
+            if (cancelled) return@Thread
+            val smsResult = sendEmergencySMS()
+
             Handler(Looper.getMainLooper()).post {
-                val title = buildResultTitle(logSent, smsSent)
-                val body  = buildResultBody(logSent, smsSent)
+                if (cancelled) return@post
+                val title = buildResultTitle(logSent, smsResult.anySent)
+                val body  = buildResultBody(logSent, smsResult)
                 showResultNotification(title, body, true)
             }
         }.start()
@@ -318,21 +396,44 @@ class CrashDetectionService : Service(), SensorEventListener {
 
     // ── Supabase HTTP ─────────────────────────────────────────────────────
 
-    private fun sendCrashLogToSupabase(): Boolean {
+    /**
+     * Insert a crash_logs row with the given outcome.
+     *  - outcome="sos_sent"  → called from executeSOS() when SOS actually fires
+     *  - outcome="cancelled" → called from cancelCountdown() when user dismisses
+     *
+     * Uses JSONObject (HIGH 6) so backslashes / unicode / control chars in
+     * the address are properly escaped instead of producing invalid JSON.
+     * Uses UTC timestamps (HIGH 3) so detected_at sorts correctly on the
+     * dashboard regardless of the device's local timezone.
+     */
+    private fun sendCrashLogToSupabase(outcome: String): Boolean {
         return try {
             val prefs = getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
             val latRaw = prefs.getString(PREF_LOCATION_LAT, "") ?: ""
             val lngRaw = prefs.getString(PREF_LOCATION_LNG, "") ?: ""
-            val addr   = (prefs.getString(PREF_LOCATION_ADDR, "") ?: "").replace("\"", "'")
-            val iso    = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date())
-            val addrJson = if (addr.isBlank()) "null" else "\"$addr\""
-            // Write null (not 0,0) when no GPS fix is on record — a 0,0 row
-            // would pin the crash to the ocean on the responder dashboard.
-            val hasLoc  = isValidCoord(latRaw) && isValidCoord(lngRaw)
-            val latJson = if (hasLoc) latRaw else "null"
-            val lngJson = if (hasLoc) lngRaw else "null"
+            val addr   = prefs.getString(PREF_LOCATION_ADDR, "") ?: ""
+            val hasLoc = isValidCoord(latRaw) && isValidCoord(lngRaw)
 
-            val json = """{"mode":"$mode","sensitivity":"$sensitivity","g_force":${lastGForce.toBigDecimal().toPlainString()},"jerk_gs":${lastJerkGs.toBigDecimal().toPlainString()},"latitude":$latJson,"longitude":$lngJson,"address":$addrJson,"device_platform":"android","detected_at":"$iso","outcome":null}"""
+            val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                .apply { timeZone = TimeZone.getTimeZone("UTC") }
+                .format(Date())
+
+            val body = JSONObject().apply {
+                put("mode", mode)
+                put("sensitivity", sensitivity)
+                // Use the impact-time snapshot, not live sensor values, so the
+                // logged g_force reflects the actual crash spike.
+                put("g_force", impactGForce.toBigDecimal().toPlainString())
+                put("jerk_gs", impactJerkGs.toBigDecimal().toPlainString())
+                // null (not 0,0) when there's no GPS fix on record — a 0,0
+                // row would pin the crash to the Gulf of Guinea on the map.
+                put("latitude", if (hasLoc) latRaw.toDouble() else JSONObject.NULL)
+                put("longitude", if (hasLoc) lngRaw.toDouble() else JSONObject.NULL)
+                put("address", if (addr.isBlank()) JSONObject.NULL else addr)
+                put("device_platform", "android")
+                put("detected_at", iso)
+                put("outcome", outcome)
+            }
 
             val url  = URL("${BuildConfig.SUPABASE_URL}/rest/v1/crash_logs")
             val conn = url.openConnection() as HttpURLConnection
@@ -344,7 +445,7 @@ class CrashDetectionService : Service(), SensorEventListener {
             conn.doOutput = true
             conn.connectTimeout = 8_000
             conn.readTimeout    = 8_000
-            conn.outputStream.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
             conn.disconnect()
             code in 200..299
@@ -355,17 +456,45 @@ class CrashDetectionService : Service(), SensorEventListener {
 
     // ── Emergency SMS ─────────────────────────────────────────────────────
 
-    private fun sendEmergencySMS(): Boolean {
+    /**
+     * Per-recipient result so the user can see exactly which contacts got
+     * the message and which failed (no more "SMS: no contacts or permission
+     * denied" for a single failed recipient).
+     */
+    data class SmsResult(
+        val sent: List<String>,
+        val failed: List<Pair<String, String>>, // phone -> reason
+        val permissionDenied: Boolean,
+        val noContacts: Boolean,
+    ) {
+        val anySent: Boolean get() = sent.isNotEmpty()
+    }
+
+    private fun sendEmergencySMS(): SmsResult {
+        val empty = SmsResult(emptyList(), emptyList(), permissionDenied = false, noContacts = true)
         return try {
-            val prefs   = getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
-            val phones  = (prefs.getString(PREF_CONTACTS, "") ?: "")
+            val prefs  = getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+            val phones = (prefs.getString(PREF_CONTACTS, "") ?: "")
                 .split(",").map { it.trim() }.filter { it.isNotBlank() }
-            if (phones.isEmpty()) return false
+            if (phones.isEmpty()) return empty
+
+            // HIGH 5 — fail loudly if SEND_SMS runtime permission isn't granted,
+            // instead of relying on the catch block below catching a
+            // SecurityException and surfacing a confusing "no contacts" message.
+            val permGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) ==
+                PackageManager.PERMISSION_GRANTED
+            if (!permGranted) {
+                return SmsResult(emptyList(), emptyList(), permissionDenied = true, noContacts = false)
+            }
 
             val latRaw = prefs.getString(PREF_LOCATION_LAT, "") ?: ""
             val lngRaw = prefs.getString(PREF_LOCATION_LNG, "") ?: ""
             val addr   = prefs.getString(PREF_LOCATION_ADDR, "") ?: ""
             val name   = prefs.getString(PREF_USER_NAME, "RoadSoS User") ?: "RoadSoS User"
+            val blood  = prefs.getString(PREF_BLOOD_GROUP, "") ?: ""
+            val allerg = prefs.getString(PREF_ALLERGIES, "") ?: ""
+            val meds   = prefs.getString(PREF_MEDICATIONS, "") ?: ""
+            val conds  = prefs.getString(PREF_CONDITIONS, "") ?: ""
             val hasLoc = isValidCoord(latRaw) && isValidCoord(lngRaw)
             val locStr = when {
                 addr.isNotBlank() -> addr
@@ -373,10 +502,23 @@ class CrashDetectionService : Service(), SensorEventListener {
                 else              -> "location unavailable — call back immediately"
             }
             val mapLine = if (hasLoc) "\nMap: https://maps.google.com/?q=$latRaw,$lngRaw" else ""
+
+            // MED 10 — include medical info the recipient may need to relay
+            // to paramedics. Mirrors the JS-side sms.ts template.
+            val medicalLines = buildString {
+                if (blood.isNotBlank() || allerg.isNotBlank() || meds.isNotBlank() || conds.isNotBlank()) {
+                    append("\n\nMedical Info:")
+                    if (blood.isNotBlank())  append("\nBlood Group: $blood")
+                    if (allerg.isNotBlank()) append("\nAllergies: $allerg")
+                    if (meds.isNotBlank())   append("\nMedications: $meds")
+                    if (conds.isNotBlank())  append("\nConditions: $conds")
+                }
+            }
+
             val message =
                 "🚨 EMERGENCY: $name may need help!\n" +
                 "Location: $locStr\n" +
-                "Triggered: auto crash detection" + mapLine
+                "Triggered: auto crash detection" + mapLine + medicalLines
 
             val smsManager: SmsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 getSystemService(SmsManager::class.java)
@@ -386,7 +528,8 @@ class CrashDetectionService : Service(), SensorEventListener {
             }
 
             val parts = smsManager.divideMessage(message)
-            var anySent = false
+            val sent = mutableListOf<String>()
+            val failed = mutableListOf<Pair<String, String>>()
             phones.forEach { phone ->
                 try {
                     if (parts.size <= 1) {
@@ -394,12 +537,14 @@ class CrashDetectionService : Service(), SensorEventListener {
                     } else {
                         smsManager.sendMultipartTextMessage(phone, null, parts, null, null)
                     }
-                    anySent = true
-                } catch (_: Exception) {}
+                    sent.add(phone)
+                } catch (e: Exception) {
+                    failed.add(phone to (e.message ?: e.javaClass.simpleName))
+                }
             }
-            anySent
+            SmsResult(sent, failed, permissionDenied = false, noContacts = false)
         } catch (_: Exception) {
-            false
+            empty
         }
     }
 
@@ -456,12 +601,30 @@ class CrashDetectionService : Service(), SensorEventListener {
         else               -> "⚠️ SOS attempted"
     }
 
-    private fun buildResultBody(logSent: Boolean, smsSent: Boolean): String {
+    private fun buildResultBody(logSent: Boolean, smsResult: SmsResult): String {
         val parts = mutableListOf<String>()
         if (logSent)  parts.add("Crash log sent to dashboard")
-        if (smsSent)  parts.add("SMS sent to emergency contacts")
-        if (!logSent) parts.add("Crash log: offline (check connection)")
-        if (!smsSent) parts.add("SMS: no contacts or permission denied")
+        else          parts.add("Crash log: offline (check connection)")
+
+        when {
+            smsResult.permissionDenied ->
+                parts.add("SMS: permission denied — grant SEND_SMS in Settings")
+            smsResult.noContacts ->
+                parts.add("SMS: no emergency contacts saved")
+            smsResult.anySent && smsResult.failed.isEmpty() ->
+                parts.add("SMS sent to ${smsResult.sent.size} contact${if (smsResult.sent.size == 1) "" else "s"}")
+            smsResult.anySent ->
+                parts.add("SMS: ${smsResult.sent.size} sent, ${smsResult.failed.size} failed")
+            else ->
+                parts.add("SMS: all ${smsResult.failed.size} recipients failed")
+        }
+        // List each failure briefly so the user knows which numbers to retry by hand.
+        if (smsResult.failed.isNotEmpty()) {
+            smsResult.failed.take(3).forEach { (phone, reason) ->
+                parts.add("  · $phone — $reason")
+            }
+            if (smsResult.failed.size > 3) parts.add("  · …and ${smsResult.failed.size - 3} more")
+        }
         return parts.joinToString("\n")
     }
 
@@ -516,12 +679,41 @@ class CrashDetectionService : Service(), SensorEventListener {
 
     // ── JS bridge ─────────────────────────────────────────────────────────
 
+    /**
+     * Emit the crash event to JS so the in-app countdown overlay can show.
+     *
+     * New Architecture (Fabric + bridgeless) uses `ReactHost.currentReactContext`
+     * — the legacy `reactNativeHost.reactInstanceManager` is a stub under
+     * bridgeless mode and may return null. Try the new path first; fall back
+     * to the legacy path so this still works on old-arch builds.
+     *
+     * Either way the crash flow still completes (SMS + Supabase happen on
+     * native), this only affects the in-app overlay.
+     */
     private fun tryEmitToJS() {
         val app = applicationContext as? MainApplication ?: return
-        val mgr = try { app.reactNativeHost.reactInstanceManager } catch (_: Exception) { return }
-        val ctx: ReactContext = mgr.currentReactContext ?: return
-        if (!ctx.hasActiveCatalystInstance()) return
-        ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-            ?.emit(EVENT_CRASH_DETECTED, null)
+        val ctx: ReactContext = resolveReactContext(app) ?: return
+        try {
+            ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                ?.emit(EVENT_CRASH_DETECTED, null)
+        } catch (_: Exception) {
+            // Catalyst not active, JS thread paused, etc. Lock-screen
+            // notification carries the UX from here.
+        }
+    }
+
+    private fun resolveReactContext(app: MainApplication): ReactContext? {
+        // New Architecture path — preferred. The reactHost property is
+        // non-null per the MainApplication contract, but accessing
+        // currentReactContext before RN finishes initializing returns null.
+        try {
+            app.reactHost.currentReactContext?.let { return it }
+        } catch (_: Throwable) {}
+        // Legacy bridge path — still works on old-arch builds.
+        try {
+            return app.reactNativeHost.reactInstanceManager.currentReactContext
+        } catch (_: Throwable) {
+            return null
+        }
     }
 }

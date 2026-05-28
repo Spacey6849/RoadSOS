@@ -37,8 +37,7 @@
         "SEND_SMS",
         "VIBRATE",
         "FOREGROUND_SERVICE",
-        "WAKE_LOCK",
-        "RECEIVE_BOOT_COMPLETED"
+        "WAKE_LOCK"
       ]
     },
     "plugins": [

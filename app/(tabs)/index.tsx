@@ -44,6 +44,7 @@ import {
   stopNativeVibration,
   storeContactsNative,
   storeLocationNative,
+  storeMedicalInfoNative,
   storeUserNameNative,
   subscribeNativeCrashEvent,
 } from '../../lib/native-crash-service';
@@ -163,10 +164,19 @@ export default function HomeScreen() {
     storeLocationNative(location.lat, location.lng, location.address ?? '').catch(() => {});
   }, [location]);
 
-  // Sync user name + contacts to native SharedPreferences once on mount
+  // Sync user name + medical + contacts to native SharedPreferences once on
+  // mount. The native crash service reads these from prefs at SOS time, so
+  // they must be fresh by the moment of impact.
   useEffect(() => {
     getUserProfile().then((p) => {
-      if (p?.name) storeUserNameNative(p.name).catch(() => {});
+      if (!p) return;
+      if (p.name) storeUserNameNative(p.name).catch(() => {});
+      storeMedicalInfoNative(
+        p.bloodGroup ?? '',
+        p.medicalInfo?.allergies ?? '',
+        p.medicalInfo?.medications ?? '',
+        p.medicalInfo?.conditions ?? '',
+      ).catch(() => {});
     }).catch(() => {});
     getEmergencyContacts().then((contacts) => {
       storeContactsNative(contacts.map((c) => c.phone), contacts.map((c) => c.name)).catch(() => {});
@@ -207,11 +217,19 @@ export default function HomeScreen() {
       appState.current = nextState;
 
       // On every active transition: refresh native SharedPreferences with the
-      // latest contacts + profile name. storeContactsNative / storeUserNameNative
-      // no-op on iOS, so this is cheap there.
+      // latest contacts + profile name + medical info. All three are read by
+      // the native crash service at SOS time. The store*Native calls no-op on
+      // iOS, so this is cheap there.
       if (prev !== 'active' && nextState === 'active') {
         getUserProfile().then((p) => {
-          if (p?.name) storeUserNameNative(p.name).catch(() => {});
+          if (!p) return;
+          if (p.name) storeUserNameNative(p.name).catch(() => {});
+          storeMedicalInfoNative(
+            p.bloodGroup ?? '',
+            p.medicalInfo?.allergies ?? '',
+            p.medicalInfo?.medications ?? '',
+            p.medicalInfo?.conditions ?? '',
+          ).catch(() => {});
         }).catch(() => {});
         getEmergencyContacts().then((contacts) => {
           storeContactsNative(contacts.map((c) => c.phone), contacts.map((c) => c.name)).catch(() => {});

@@ -9,8 +9,17 @@ import { Colors, Spacing, Typography } from '../../constants/theme';
 import { tabContentPaddingBottom } from '../../constants/layout';
 import { getEmergencyContacts, getSeedForRegion, getUserProfile, loadServicesCache, saveEmergencyContacts, saveServicesCache, saveUserProfile } from '../../lib/offline-cache';
 import { ALL_REGION_KEYS, getRegionByKey } from '../../lib/region-detector';
+import { storeContactsNative, storeMedicalInfoNative, storeUserNameNative } from '../../lib/native-crash-service';
 import { uid } from '../../lib/utils';
 import { AppMode, BloodGroup, CrashSensitivity, EmergencyContact, Language, UserProfile } from '../../types';
+
+// Native Kotlin foreground service reads contacts/name from SharedPreferences
+// at SOS time. Settings changes MUST sync to those prefs immediately — without
+// this, adding/removing a contact wouldn't take effect until the next AppState
+// foreground transition, and a crash fired in between would page the stale list.
+function syncContactsToNative(next: EmergencyContact[]): void {
+  storeContactsNative(next.map((c) => c.phone), next.map((c) => c.name)).catch(() => {});
+}
 
 const BLOOD_GROUPS: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const LANGUAGES: Language[] = ['English', 'Hindi', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Marathi'];
@@ -72,6 +81,21 @@ export default function SettingsScreen() {
     const next = { ...profile, ...updates };
     setProfile(next);
     await saveUserProfile(next);
+    // Mirror the user's name into native prefs so the SMS template addresses
+    // them correctly even on a JS-cold-start auto-SOS.
+    if (updates.name && updates.name !== profile.name) {
+      storeUserNameNative(next.name).catch(() => {});
+    }
+    // Same for medical info — the native SMS template includes blood group
+    // and conditions so the recipient knows what to tell paramedics.
+    if (updates.bloodGroup !== undefined || updates.medicalInfo !== undefined) {
+      storeMedicalInfoNative(
+        next.bloodGroup,
+        next.medicalInfo.allergies,
+        next.medicalInfo.medications,
+        next.medicalInfo.conditions,
+      ).catch(() => {});
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 1400);
   }
@@ -89,6 +113,7 @@ export default function SettingsScreen() {
     const next = [...contacts, { id: uid(), name, phone }];
     setContacts(next);
     await saveEmergencyContacts(next);
+    syncContactsToNative(next);
     setSaved(true);
     setTimeout(() => setSaved(false), 1400);
   }
@@ -103,6 +128,7 @@ export default function SettingsScreen() {
           const next = contacts.filter((contact) => contact.id !== id);
           setContacts(next);
           await saveEmergencyContacts(next);
+          syncContactsToNative(next);
         },
       },
     ]);

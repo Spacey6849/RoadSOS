@@ -169,6 +169,31 @@ class CrashDetectionModule(reactContext: ReactApplicationContext)
     }
 
     /**
+     * Persist blood group + medical info into prefs so the native SOS SMS
+     * can include them when fired from a JS-cold-start crash. Pass empty
+     * strings to clear individual fields.
+     */
+    @ReactMethod
+    fun storeMedicalInfo(
+        bloodGroup: String,
+        allergies: String,
+        medications: String,
+        conditions: String,
+        promise: Promise,
+    ) {
+        try {
+            reactApplicationContext.getSharedPreferences(CrashDetectionService.PREF_FILE, Context.MODE_PRIVATE)
+                .edit()
+                .putString(CrashDetectionService.PREF_BLOOD_GROUP, bloodGroup)
+                .putString(CrashDetectionService.PREF_ALLERGIES, allergies)
+                .putString(CrashDetectionService.PREF_MEDICATIONS, medications)
+                .putString(CrashDetectionService.PREF_CONDITIONS, conditions)
+                .apply()
+            promise.resolve(true)
+        } catch (e: Throwable) { promise.reject("ERR_STORE", e.message, e) }
+    }
+
+    /**
      * Check whether the native service detected a crash while JS was not running.
      * Reads + clears SharedPreferences atomically. Discards stale entries (>5 min old).
      */

@@ -18,6 +18,14 @@ export function useLocation() {
           if (mounted) setError('Location permission denied');
           return;
         }
+        // Best-effort background permission — Android requires a SEPARATE
+        // prompt after foreground is granted (the system shows a second
+        // settings page on Android 11+, can't be requested back-to-back).
+        // Without this, the native crash service can only use the last
+        // location that JS wrote to SharedPreferences before the app was
+        // backgrounded. Silently continue on denial — foreground-only is a
+        // valid fallback and crash detection still works.
+        try { await Location.requestBackgroundPermissionsAsync(); } catch { /* user-denial is fine */ }
 
         // Get initial position fast
         const pos = await Location.getCurrentPositionAsync({

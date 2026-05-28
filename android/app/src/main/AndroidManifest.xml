@@ -14,7 +14,13 @@
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH"/>
   <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS"/>
   <uses-permission android:name="android.permission.WAKE_LOCK"/>
-  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+  <!-- RECEIVE_BOOT_COMPLETED was declared previously but no BroadcastReceiver
+       was ever registered for it. Without a receiver the permission is dead
+       weight (and shows on the Play Store listing as "auto-start at boot"
+       which scares users). The crash service correctly restarts when the
+       user reopens the app post-reboot; auto-resume on boot would need a
+       dedicated receiver, which is a separate piece of work. -->
+
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>

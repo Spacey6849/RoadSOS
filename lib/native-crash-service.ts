@@ -133,6 +133,27 @@ export async function storeUserNameNative(name: string): Promise<void> {
   try { await RoadSoSCrashDetection.storeUserName(name); } catch {}
 }
 
+/**
+ * Persist blood group + medical info so the native SMS template can include
+ * them when SOS fires while JS is dead. Empty strings clear individual fields.
+ */
+export async function storeMedicalInfoNative(
+  bloodGroup: string,
+  allergies: string,
+  medications: string,
+  conditions: string,
+): Promise<void> {
+  if (!isNativeCrashServiceAvailable) return;
+  try {
+    await RoadSoSCrashDetection.storeMedicalInfo(
+      bloodGroup ?? '',
+      allergies ?? '',
+      medications ?? '',
+      conditions ?? '',
+    );
+  } catch {}
+}
+
 export function subscribeNativeCrashEvent(handler: () => void): () => void {
   const emitter = getEmitter();
   if (!emitter) return () => {};
