@@ -6,6 +6,30 @@ import { useLanguage } from '@/lib/i18n/LanguageProvider';
 import { createClient } from '@/lib/supabase/client';
 import { motion } from 'framer-motion';
 
+// Shape of an incident row as it comes back from Supabase — enough fields to
+// make the CSV export useful for offline analysis.
+type IncidentExportRow = {
+  id: string;
+  created_at: string;
+  trigger_type?: string | null;
+  status?: string | null;
+  user_name?: string | null;
+  blood_group?: string | null;
+  address?: string | null;
+  location?: { coordinates?: [number, number] } | null;
+  resolved_at?: string | null;
+  resolution_note?: string | null;
+};
+
+// RFC 4180 CSV escape — wrap in quotes when the value contains comma / quote /
+// newline / carriage return, and double any embedded quotes.
+function csvEscape(v: unknown): string {
+  if (v == null) return '';
+  const s = String(v);
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
 export default function AdminPage() {
   const { t } = useLanguage();
   const [elapsed, setElapsed] = useState(0);
@@ -13,16 +37,31 @@ export default function AdminPage() {
   const [incidentCount, setIncidentCount] = useState(0);
   const [clearing, setClearing] = useState(false);
   const [clearResult, setClearResult] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
     const iv = setInterval(() => setElapsed(e => e + 1), 1000);
     return () => clearInterval(iv);
   }, []);
 
-  useEffect(() => {
+  // Reusable so the Refresh Services quick action can call it too.
+  async function refreshCounts(): Promise<{ services: number | null; incidents: number | null }> {
     const supabase = createClient();
-    supabase.from('services').select('id', { count: 'exact', head: true }).then(({ count }) => { if (count != null) setServiceCount(count); });
-    supabase.from('incidents').select('id', { count: 'exact', head: true }).eq('status', 'active').then(({ count }) => { if (count != null) setIncidentCount(count); });
+    const [svcRes, incRes] = await Promise.all([
+      supabase.from('services').select('id', { count: 'exact', head: true }),
+      supabase.from('incidents').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+    ]);
+    if (svcRes.count != null) setServiceCount(svcRes.count);
+    if (incRes.count != null) setIncidentCount(incRes.count);
+    return { services: svcRes.count ?? null, incidents: incRes.count ?? null };
+  }
+
+  useEffect(() => {
+    refreshCounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Hard-deletes every crash_logs row with resolved=true plus every incidents
@@ -73,6 +112,87 @@ export default function AdminPage() {
       setClearResult({ kind: 'err', text: e instanceof Error ? e.message : 'Unknown error' });
     } finally {
       setClearing(false);
+    }
+  }
+
+  // Export every incident row as a CSV download. Uses a UTF-8 BOM so Excel
+  // opens the file with the right encoding (without it, accented characters
+  // in addresses render as mojibake).
+  async function handleExportCSV() {
+    if (exporting) return;
+    setExporting(true);
+    setExportResult(null);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('incidents')
+        .select('id,created_at,trigger_type,status,user_name,blood_group,address,location,resolved_at,resolution_note')
+        .order('created_at', { ascending: false })
+        .limit(10_000);
+      if (error) throw error;
+      const rows = (data as IncidentExportRow[]) ?? [];
+      if (rows.length === 0) {
+        setExportResult({ kind: 'ok', text: 'No incidents to export.' });
+        return;
+      }
+      const header = ['id', 'created_at', 'trigger_type', 'status', 'user_name', 'blood_group', 'address', 'latitude', 'longitude', 'resolved_at', 'resolution_note'];
+      const lines = [header.join(',')];
+      for (const r of rows) {
+        const lng = r.location?.coordinates?.[0] ?? '';
+        const lat = r.location?.coordinates?.[1] ?? '';
+        lines.push([
+          r.id,
+          r.created_at,
+          r.trigger_type ?? '',
+          r.status ?? '',
+          r.user_name ?? '',
+          r.blood_group ?? '',
+          r.address ?? '',
+          lat,
+          lng,
+          r.resolved_at ?? '',
+          r.resolution_note ?? '',
+        ].map(csvEscape).join(','));
+      }
+      const csv = '﻿' + lines.join('\r\n'); // BOM + CRLF for Excel
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const date = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `roadsos-incidents-${date}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Revoke after the click handler runs — synchronous revocation can race
+      // the browser's "Save as" dialog on some platforms.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExportResult({ kind: 'ok', text: `Exported ${rows.length} incident${rows.length === 1 ? '' : 's'}.` });
+    } catch (e) {
+      setExportResult({ kind: 'err', text: e instanceof Error ? e.message : 'Export failed' });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleRefreshServices() {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshResult(null);
+    try {
+      const before = serviceCount;
+      const { services } = await refreshCounts();
+      if (services == null) {
+        setRefreshResult({ kind: 'err', text: 'Could not refresh counts.' });
+        return;
+      }
+      const delta = services - before;
+      const deltaText = delta === 0 ? '' : delta > 0 ? ` (+${delta})` : ` (${delta})`;
+      setRefreshResult({ kind: 'ok', text: `Refreshed · ${services} service${services === 1 ? '' : 's'}${deltaText}.` });
+    } catch (e) {
+      setRefreshResult({ kind: 'err', text: e instanceof Error ? e.message : 'Refresh failed' });
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -157,25 +277,25 @@ export default function AdminPage() {
       {/* Quick Actions */}
       <section>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--text-faint)', letterSpacing: '0.08em', marginBottom: 12 }}>Quick actions</p>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {[
-            { label: 'Export incidents CSV', onClick: undefined, busyLabel: null },
-            { label: 'Clear resolved', onClick: handleClearResolved, busyLabel: clearing ? 'Clearing…' : null },
-            { label: 'Refresh services', onClick: undefined, busyLabel: null },
+            { key: 'export', label: 'Export incidents CSV', busyLabel: 'Exporting…', busy: exporting, onClick: handleExportCSV },
+            { key: 'clear', label: 'Clear resolved', busyLabel: 'Clearing…', busy: clearing, onClick: handleClearResolved },
+            { key: 'refresh', label: 'Refresh services', busyLabel: 'Refreshing…', busy: refreshing, onClick: handleRefreshServices },
           ].map(btn => {
-            const disabled = btn.onClick === undefined || (btn.label === 'Clear resolved' && clearing);
-            const labelText = btn.busyLabel ?? btn.label;
+            const disabled = btn.busy;
+            const labelText = btn.busy ? btn.busyLabel : btn.label;
             return (
               <button
-                key={btn.label}
+                key={btn.key}
                 onClick={btn.onClick}
                 disabled={disabled}
                 style={{
                   fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-muted)',
                   border: '1px solid var(--border)', borderRadius: 5, height: 34, padding: '0 14px',
-                  cursor: disabled ? 'not-allowed' : 'pointer', transition: 'all 0.15s',
+                  cursor: disabled ? 'wait' : 'pointer', transition: 'all 0.15s',
                   background: 'transparent',
-                  opacity: disabled && !btn.busyLabel ? 0.55 : 1,
+                  opacity: disabled ? 0.7 : 1,
                 }}
                 onMouseEnter={e => {
                   if (disabled) return;
@@ -191,15 +311,25 @@ export default function AdminPage() {
             );
           })}
         </div>
-        {clearResult && (
-          <p style={{
-            marginTop: 10,
-            fontFamily: 'var(--font-mono)', fontSize: 11,
-            color: clearResult.kind === 'ok' ? 'var(--green)' : 'var(--red)',
-          }}>
-            {clearResult.text}
-          </p>
-        )}
+        {/* Result lines — one per action so users can see all three outcomes
+            at once instead of the last action clobbering earlier feedback. */}
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {exportResult && (
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: exportResult.kind === 'ok' ? 'var(--green)' : 'var(--red)' }}>
+              Export: {exportResult.text}
+            </p>
+          )}
+          {clearResult && (
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: clearResult.kind === 'ok' ? 'var(--green)' : 'var(--red)' }}>
+              Clear: {clearResult.text}
+            </p>
+          )}
+          {refreshResult && (
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: refreshResult.kind === 'ok' ? 'var(--green)' : 'var(--red)' }}>
+              Refresh: {refreshResult.text}
+            </p>
+          )}
+        </div>
       </section>
     </div>
   );
