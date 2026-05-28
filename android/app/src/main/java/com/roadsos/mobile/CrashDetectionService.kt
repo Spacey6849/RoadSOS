@@ -21,6 +21,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.telephony.SmsManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.ReactContext
@@ -72,8 +73,17 @@ class CrashDetectionService : Service(), SensorEventListener {
         // service with a null intent (OOM kill / process death).
         private const val PREF_LAST_MODE        = "last_mode"
         private const val PREF_LAST_SENSITIVITY = "last_sensitivity"
+        // Single-slot retry queue: if the crash_logs POST fails (network
+        // down, RLS error, whatever), we stash the JSON body here and retry
+        // the next time the service starts. Newer pending logs overwrite
+        // older ones, and anything > 24h old is discarded.
+        private const val PREF_PENDING_LOG      = "pending_log_json"
+        private const val PREF_PENDING_LOG_TIME = "pending_log_time"
+        private const val PENDING_LOG_TTL_MS    = 24 * 60 * 60 * 1000L
 
         const val EVENT_CRASH_DETECTED = "RoadSoSCrashDetected"
+
+        private const val TAG_LOG = "RoadSoSCrashLog"
 
         private const val UPDATE_INTERVAL_US  = 50_000   // 20 Hz
         private const val EMA_ALPHA           = 0.08f
@@ -210,6 +220,12 @@ class CrashDetectionService : Service(), SensorEventListener {
         accelerometer?.also { sensor ->
             sensorManager.registerListener(this, sensor, UPDATE_INTERVAL_US)
         }
+
+        // If a crash_log POST failed last session (network down at the
+        // moment of impact, process killed mid-flight, RLS hiccup), retry it
+        // now that we're back online. Fire-and-forget on its own Thread —
+        // failure here just leaves the entry queued for the next start.
+        retryPendingLog()
 
         return START_STICKY
     }
@@ -407,6 +423,23 @@ class CrashDetectionService : Service(), SensorEventListener {
      * dashboard regardless of the device's local timezone.
      */
     private fun sendCrashLogToSupabase(outcome: String): Boolean {
+        val body = buildCrashLogJson(outcome) ?: return false
+        val sent = postRawJsonToCrashLogs(body)
+        if (!sent) {
+            // Queue for retry on next service start. We only keep ONE pending
+            // log at a time — if a second crash fails before the first one
+            // gets retried, the older one is dropped. Tracking a queue would
+            // need a more elaborate storage format and isn't worth it for
+            // the hackathon scope.
+            queuePendingLog(body)
+            if (BuildConfig.DEBUG) Log.w(TAG_LOG, "POST failed, queued for retry (outcome=$outcome)")
+        } else if (BuildConfig.DEBUG) {
+            Log.i(TAG_LOG, "POST ok (outcome=$outcome)")
+        }
+        return sent
+    }
+
+    private fun buildCrashLogJson(outcome: String): String? {
         return try {
             val prefs = getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
             val latRaw = prefs.getString(PREF_LOCATION_LAT, "") ?: ""
@@ -418,7 +451,7 @@ class CrashDetectionService : Service(), SensorEventListener {
                 .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 .format(Date())
 
-            val body = JSONObject().apply {
+            JSONObject().apply {
                 put("mode", mode)
                 put("sensitivity", sensitivity)
                 // Use the impact-time snapshot, not live sensor values, so the
@@ -433,8 +466,15 @@ class CrashDetectionService : Service(), SensorEventListener {
                 put("device_platform", "android")
                 put("detected_at", iso)
                 put("outcome", outcome)
-            }
+            }.toString()
+        } catch (e: Exception) {
+            if (BuildConfig.DEBUG) Log.e(TAG_LOG, "buildCrashLogJson failed", e)
+            null
+        }
+    }
 
+    private fun postRawJsonToCrashLogs(jsonBody: String): Boolean {
+        return try {
             val url  = URL("${BuildConfig.SUPABASE_URL}/rest/v1/crash_logs")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
@@ -445,13 +485,50 @@ class CrashDetectionService : Service(), SensorEventListener {
             conn.doOutput = true
             conn.connectTimeout = 8_000
             conn.readTimeout    = 8_000
-            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            conn.outputStream.use { it.write(jsonBody.toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
+            if (BuildConfig.DEBUG && code !in 200..299) {
+                Log.w(TAG_LOG, "POST returned HTTP $code")
+            }
             conn.disconnect()
             code in 200..299
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (BuildConfig.DEBUG) Log.w(TAG_LOG, "POST exception: ${e.message}")
             false
         }
+    }
+
+    private fun queuePendingLog(jsonBody: String) {
+        getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_PENDING_LOG, jsonBody)
+            .putLong(PREF_PENDING_LOG_TIME, System.currentTimeMillis())
+            .apply()
+    }
+
+    /**
+     * Retry any single pending crash_log left over from a previous session
+     * (network was down, RLS hiccup, process killed mid-flight). Called once
+     * on every service start. Best-effort — silently does nothing if nothing
+     * is queued or the queued entry is too stale.
+     */
+    private fun retryPendingLog() {
+        val prefs = getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+        val json = prefs.getString(PREF_PENDING_LOG, null) ?: return
+        val savedAt = prefs.getLong(PREF_PENDING_LOG_TIME, 0L)
+        if (System.currentTimeMillis() - savedAt > PENDING_LOG_TTL_MS) {
+            prefs.edit().remove(PREF_PENDING_LOG).remove(PREF_PENDING_LOG_TIME).apply()
+            if (BuildConfig.DEBUG) Log.i(TAG_LOG, "Discarded pending log (>24h old)")
+            return
+        }
+        Thread {
+            if (postRawJsonToCrashLogs(json)) {
+                prefs.edit().remove(PREF_PENDING_LOG).remove(PREF_PENDING_LOG_TIME).apply()
+                if (BuildConfig.DEBUG) Log.i(TAG_LOG, "Retry of pending log succeeded")
+            } else if (BuildConfig.DEBUG) {
+                Log.w(TAG_LOG, "Retry of pending log failed; will try again next start")
+            }
+        }.start()
     }
 
     // ── Emergency SMS ─────────────────────────────────────────────────────
