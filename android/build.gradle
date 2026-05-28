@@ -20,18 +20,27 @@ allprojects {
   }
 }
 
-// Windows MAX_PATH fix: redirect all non-app subproject build dirs to a short
-// path so codegen-generated .cpp files land under D:\b\<module>\ instead of
-// the deep node_modules path. CMake embeds the absolute source path in every
-// object filename, so shortening the source location keeps the combined ninja
-// object path under 260 chars. We stay on D: (same drive as source) so that
-// Gradle's Path.relativize() can compute relative paths without hitting the
-// "different roots" error thrown for cross-drive relativization.
-subprojects {
-  if (project.path != ':app') {
-    buildDir = "D:/b/${project.name}"
-  }
-}
+// MAX_PATH redirect was attempted with `buildDir = "D:/b/${project.name}"`
+// for non-app subprojects but caused two problems that combined to make
+// release builds unbuildable:
+//   1. The app's React Native Android-autolinking.cmake hard-codes codegen
+//      JNI paths at `<node_modules>/<lib>/android/build/generated/source/
+//      codegen/jni`. Redirecting buildDir puts those files under
+//      `D:/b/<lib>/generated/source/codegen/jni` instead — CMake then fails
+//      `app:configureCMakeRelWithDebInfo` with "not an existing directory"
+//      for every redirected codegen dependency (async-storage, llama.rn,
+//      reanimated, webview, worklets).
+//   2. reanimated 4.x's CMake hard-codes the path to libworklets.so as
+//      `<node_modules>/react-native-worklets/android/build/intermediates/
+//      .../libworklets.so` — so worklets specifically had to be exempt
+//      from the redirect anyway.
+// Both paths assume the default buildDir. Building from `D:\rsos` (8-char
+// prefix) gives enough headroom for CMake's object filenames without
+// needing the redirect — typical lib path is ~120 chars including
+// intermediates which stays under MAX_PATH=260.
+// If you start hitting MAX_PATH again, the right fix is a junction
+// (`mklink /J D:\rs D:\rsos`) to shorten the prefix further, not a
+// buildDir override.
 
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
