@@ -223,9 +223,15 @@ export default function DashboardPage() {
           const c = mapCrashLog(payload.new);
           setCrashLogs(prev => [c, ...prev.filter(x => x.id !== c.id)].slice(0, 50));
           // Hand the crash to the dispatch pipeline (severity-aware confirm or
-          // immediate dispatch). Skip if already resolved or marked false-alarm
-          // on arrival (e.g. backfill from another tab).
-          if (!c.resolved && c.outcome !== 'false-alarm' && c.location) {
+          // immediate dispatch). Skip if already resolved, marked false-alarm,
+          // OR cancelled by the driver — those are "I'm OK" signals and don't
+          // need a responder routed.
+          if (
+            !c.resolved &&
+            c.outcome !== 'false-alarm' &&
+            c.outcome !== 'cancelled' &&
+            c.location
+          ) {
             handleNewCrash(c);
           }
         })
