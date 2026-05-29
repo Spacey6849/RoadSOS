@@ -31,6 +31,21 @@ function csvEscape(v: unknown): string {
   return s;
 }
 
+// Trigger a browser CSV download from pre-built lines. UTF-8 BOM so Excel
+// reads accented characters correctly; CRLF line endings.
+function downloadCsv(filename: string, lines: string[]): void {
+  const csv = '﻿' + lines.join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default function AdminPage() {
   const { t } = useLanguage();
   const isMobile = useIsMobile();
@@ -40,6 +55,7 @@ export default function AdminPage() {
   const [clearing, setClearing] = useState(false);
   const [clearResult, setClearResult] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [crashExporting, setCrashExporting] = useState(false);
   const [exportResult, setExportResult] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -156,24 +172,45 @@ export default function AdminPage() {
           r.resolution_note ?? '',
         ].map(csvEscape).join(','));
       }
-      const csv = '﻿' + lines.join('\r\n'); // BOM + CRLF for Excel
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const date = new Date().toISOString().slice(0, 10);
-      a.href = url;
-      a.download = `roadsos-incidents-${date}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      // Revoke after the click handler runs — synchronous revocation can race
-      // the browser's "Save as" dialog on some platforms.
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadCsv(`roadsos-incidents-${new Date().toISOString().slice(0, 10)}.csv`, lines);
       setExportResult({ kind: 'ok', text: `Exported ${rows.length} incident${rows.length === 1 ? '' : 's'}.` });
     } catch (e) {
       setExportResult({ kind: 'err', text: e instanceof Error ? e.message : 'Export failed' });
     } finally {
       setExporting(false);
+    }
+  }
+
+  // Export every crash_logs row as CSV — the severity inspector data
+  // (g-force, jerk, mode, outcome, coordinates) for offline analysis.
+  async function handleExportCrashCSV() {
+    if (crashExporting) return;
+    setCrashExporting(true);
+    setExportResult(null);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('crash_logs')
+        .select('id,detected_at,device_platform,mode,sensitivity,g_force,jerk_gs,latitude,longitude,address,outcome,resolved,resolved_at')
+        .order('detected_at', { ascending: false })
+        .limit(10_000);
+      if (error) throw error;
+      const rows = (data as any[]) ?? [];
+      if (rows.length === 0) {
+        setExportResult({ kind: 'ok', text: 'No crash logs to export.' });
+        return;
+      }
+      const header = ['id', 'detected_at', 'device_platform', 'mode', 'sensitivity', 'g_force', 'jerk_gs', 'latitude', 'longitude', 'address', 'outcome', 'resolved', 'resolved_at'];
+      const lines = [header.join(',')];
+      for (const r of rows) {
+        lines.push(header.map((k) => csvEscape(r[k])).join(','));
+      }
+      downloadCsv(`roadsos-crashes-${new Date().toISOString().slice(0, 10)}.csv`, lines);
+      setExportResult({ kind: 'ok', text: `Exported ${rows.length} crash log${rows.length === 1 ? '' : 's'}.` });
+    } catch (e) {
+      setExportResult({ kind: 'err', text: e instanceof Error ? e.message : 'Crash export failed' });
+    } finally {
+      setCrashExporting(false);
     }
   }
 
@@ -282,6 +319,7 @@ export default function AdminPage() {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {[
             { key: 'export', label: 'Export incidents CSV', busyLabel: 'Exporting…', busy: exporting, onClick: handleExportCSV },
+            { key: 'export-crash', label: 'Export crash logs CSV', busyLabel: 'Exporting…', busy: crashExporting, onClick: handleExportCrashCSV },
             { key: 'clear', label: 'Clear resolved', busyLabel: 'Clearing…', busy: clearing, onClick: handleClearResolved },
             { key: 'refresh', label: 'Refresh services', busyLabel: 'Refreshing…', busy: refreshing, onClick: handleRefreshServices },
           ].map(btn => {

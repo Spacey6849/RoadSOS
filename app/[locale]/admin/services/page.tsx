@@ -6,6 +6,8 @@ import { createClient } from '@/lib/supabase/client';
 import type { NearbyService, ServiceType } from '@/lib/types';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useIsMobile } from '@/lib/useIsMobile';
+import { INDIA_CITIES, type CityPreset } from '@/lib/overpass';
+import { importOsmArea, loadExistingKeys } from '@/lib/osm-import';
 
 const SERVICE_TYPES: ServiceType[] = ['hospital', 'trauma_centre', 'ambulance', 'police', 'towing', 'puncture', 'showroom'];
 
@@ -44,6 +46,14 @@ export default function ServicesPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
   const [deleteError, setDeleteError] = useState('');
+
+  // OpenStreetMap import panel state
+  const [importOpen, setImportOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [cityIdx, setCityIdx] = useState(0);
+  const [radiusKm, setRadiusKm] = useState('25');
+  const [importLog, setImportLog] = useState<string[]>([]);
+  const [importDone, setImportDone] = useState<{ inserted: number; skipped: number } | null>(null);
 
   const loadServices = useCallback(() => {
     const supabase = createClient();
@@ -132,6 +142,51 @@ export default function ServicesPage() {
     loadServices();
   }
 
+  // ── OpenStreetMap import ────────────────────────────────────────────────
+  // Pull real emergency services from OSM (Overpass) into the table. A single
+  // all-India query is infeasible, so we import per-city; "Import all cities"
+  // sweeps the curated INDIA_CITIES list sequentially (with a pause between
+  // each to stay polite to the public Overpass mirrors).
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  async function runImport(cities: CityPreset[]) {
+    if (importing) return;
+    const radius = Math.min(Math.max(Number(radiusKm) || 25, 1), 60);
+    setImporting(true);
+    setImportLog([]);
+    setImportDone(null);
+
+    // One shared de-dupe snapshot for the whole sweep so overlapping city radii
+    // don't re-insert the same POI twice.
+    const existing = await loadExistingKeys();
+    let totalInserted = 0;
+    let totalSkipped = 0;
+
+    for (let i = 0; i < cities.length; i++) {
+      const c = cities[i];
+      if (!c) continue;
+      setImportLog((prev) => [...prev, `↻ ${c.name} (${radius} km)…`]);
+      const res = await importOsmArea(c.lat, c.lng, radius, existing);
+      if (res.error) {
+        setImportLog((prev) => [...prev, `✗ ${c.name}: ${res.error}`]);
+      } else {
+        totalInserted += res.inserted;
+        totalSkipped += res.skipped;
+        setImportLog((prev) => [...prev, `✓ ${c.name}: +${res.inserted} new · ${res.skipped} already had`]);
+      }
+      if (i < cities.length - 1) await sleep(1500);
+    }
+
+    setImportDone({ inserted: totalInserted, skipped: totalSkipped });
+    setImporting(false);
+    loadServices();
+  }
+
+  function handleImportCity() {
+    const c = INDIA_CITIES[cityIdx];
+    if (c) runImport([c]);
+  }
+
   const inputStyle: React.CSSProperties = {
     width: '100%', background: 'transparent', border: 'none',
     borderBottom: '1px solid var(--border-mid)',
@@ -151,12 +206,20 @@ export default function ServicesPage() {
           <h1 style={{ fontSize: 24, fontWeight: 300, color: 'var(--text-primary)', letterSpacing: -0.5 }}>Emergency Services</h1>
           <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{services.length} registered</p>
         </div>
-        <button
-          onClick={() => { setEditingId(null); setForm({ name: '', service_type: 'hospital', primary_phone: '', address: '', lat: '', lng: '' }); setPanelOpen(true); }}
-          style={{ height: 36, padding: '0 16px', background: 'var(--red)', color: '#fff', fontFamily: 'var(--font-mono)', fontSize: 13, borderRadius: 6, cursor: 'pointer', transition: 'opacity 0.15s' }}
-          onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; }}
-          onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
-        >+ Add Service</button>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <button
+            onClick={() => { setImportLog([]); setImportDone(null); setImportOpen(true); }}
+            style={{ height: 36, padding: '0 14px', background: 'transparent', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: 13, border: '1px solid var(--border-mid)', borderRadius: 6, cursor: 'pointer', transition: 'all 0.15s' }}
+            onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.borderColor = 'var(--text-muted)'; }}
+            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border-mid)'; }}
+          >↓ Import from OSM</button>
+          <button
+            onClick={() => { setEditingId(null); setForm({ name: '', service_type: 'hospital', primary_phone: '', address: '', lat: '', lng: '' }); setPanelOpen(true); }}
+            style={{ height: 36, padding: '0 16px', background: 'var(--red)', color: '#fff', fontFamily: 'var(--font-mono)', fontSize: 13, borderRadius: 6, cursor: 'pointer', transition: 'opacity 0.15s' }}
+            onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; }}
+            onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+          >+ Add Service</button>
+        </div>
       </div>
 
       {deleteError && (
@@ -280,6 +343,78 @@ export default function ServicesPage() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* OpenStreetMap import modal */}
+      <AnimatePresence>
+        {importOpen && (
+          <>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 60 }}
+              onClick={() => { if (!importing) setImportOpen(false); }}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 8 }}
+              transition={{ ease: [0.32, 0.72, 0, 1], duration: 0.25 }}
+              style={{
+                position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+                width: isMobile ? '92vw' : 460, maxHeight: '85vh', overflow: 'auto',
+                background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
+                zIndex: 70, display: 'flex', flexDirection: 'column', padding: 24,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <h2 style={{ fontSize: 16, fontWeight: 500, color: 'var(--text-primary)' }}>Import from OpenStreetMap</h2>
+                <button onClick={() => { if (!importing) setImportOpen(false); }} disabled={importing}
+                  style={{ fontSize: 18, color: 'var(--text-muted)', cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.4 : 1 }}>✕</button>
+              </div>
+              <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 20 }}>
+                Pulls real hospitals, police, fire/rescue, ambulance, towing &amp; tyre shops from OpenStreetMap. India is too large for one query, so import a city at a time — or sweep every major city for national coverage. Duplicates are skipped automatically.
+              </p>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 96px', gap: 12, marginBottom: 16 }}>
+                <div>
+                  <label style={labelStyle}>City</label>
+                  <select value={cityIdx} onChange={e => setCityIdx(Number(e.target.value))} disabled={importing}
+                    style={{ ...inputStyle, cursor: importing ? 'not-allowed' : 'pointer' }}>
+                    {INDIA_CITIES.map((c, i) => (
+                      <option key={c.name} value={i} style={{ background: 'var(--bg)', color: 'var(--text-primary)' }}>{c.region} · {c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label style={labelStyle}>Radius km</label>
+                  <input value={radiusKm} onChange={e => setRadiusKm(e.target.value)} disabled={importing}
+                    inputMode="numeric" style={inputStyle} />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, marginBottom: importLog.length || importDone ? 16 : 0 }}>
+                <button onClick={handleImportCity} disabled={importing}
+                  style={{ flex: 1, height: 38, background: 'var(--blue)', color: '#fff', fontFamily: 'var(--font-mono)', fontSize: 13, borderRadius: 6, cursor: importing ? 'wait' : 'pointer', opacity: importing ? 0.6 : 1 }}>
+                  {importing ? 'Importing…' : 'Import this city'}
+                </button>
+                <button onClick={() => runImport(INDIA_CITIES)} disabled={importing}
+                  style={{ flex: 1, height: 38, background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-mid)', fontFamily: 'var(--font-mono)', fontSize: 13, borderRadius: 6, cursor: importing ? 'wait' : 'pointer', opacity: importing ? 0.6 : 1 }}>
+                  Import all {INDIA_CITIES.length} cities
+                </button>
+              </div>
+
+              {(importLog.length > 0 || importDone) && (
+                <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, maxHeight: 240, overflow: 'auto' }}>
+                  {importLog.map((line, i) => (
+                    <p key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: line.startsWith('✗') ? 'var(--red)' : line.startsWith('✓') ? 'var(--green)' : 'var(--text-muted)', lineHeight: 1.7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{line}</p>
+                  ))}
+                  {importDone && (
+                    <p style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)', marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+                      Done — {importDone.inserted} added, {importDone.skipped} already present.
+                    </p>
+                  )}
+                </div>
+              )}
             </motion.div>
           </>
         )}

@@ -52,8 +52,23 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     const supabase = createClient();
-    supabase.from('incidents').select('created_at,trigger_type').order('created_at').then(({ data }) => {
-      if (data) setRows(data as Row[]);
+    // Analytics spans BOTH incidents and crashes — a crash is an emergency
+    // event just like a manual SOS. Crashes are auto-detected, so they map to
+    // trigger_type 'auto'. Without this the page reads 0 when the incidents
+    // table is empty even though crashes exist.
+    Promise.all([
+      supabase.from('incidents').select('created_at,trigger_type'),
+      supabase.from('crash_logs').select('detected_at,outcome'),
+    ]).then(([inc, crash]) => {
+      const incRows: Row[] = (inc.data ?? []).map((r: any) => ({
+        created_at: r.created_at,
+        trigger_type: r.trigger_type || 'manual',
+      }));
+      const crashRows: Row[] = (crash.data ?? [])
+        // a driver-cancelled / false-alarm crash isn't a real emergency event
+        .filter((r: any) => r.outcome !== 'cancelled' && r.outcome !== 'false-alarm')
+        .map((r: any) => ({ created_at: r.detected_at, trigger_type: 'auto' }));
+      setRows([...incRows, ...crashRows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
       setLoading(false);
     });
   }, []);
@@ -96,15 +111,15 @@ export default function AnalyticsPage() {
     <div style={{ padding: isMobile ? '18px 14px' : '28px 32px', maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ marginBottom: 32 }}>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-faint)', marginBottom: 4 }}>Analytics</p>
-        <h1 style={{ fontSize: 24, fontWeight: 300, color: 'var(--text-primary)', letterSpacing: -0.5 }}>Incident Analytics</h1>
-        <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{rows.length} total incidents</p>
+        <h1 style={{ fontSize: 24, fontWeight: 300, color: 'var(--text-primary)', letterSpacing: -0.5 }}>Emergency Analytics</h1>
+        <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{rows.length} total alerts (incidents + crashes)</p>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 16 : 24 }}>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
           {/* Daily line chart */}
           <div ref={lineRef} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '20px 20px 12px', overflow: 'hidden' }}>
-            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 16 }}>Incidents / Day (last 30 days)</p>
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 16 }}>Alerts / Day (last 30 days)</p>
             {dailyData.length === 0 ? (
               <p style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-faint)', textAlign: 'center', padding: '40px 0' }}>No data in last 30 days</p>
             ) : (
@@ -120,7 +135,7 @@ export default function AnalyticsPage() {
 
           {/* Hourly bar chart */}
           <div ref={barRef} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '20px 20px 12px', overflow: 'hidden' }}>
-            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 16 }}>Incidents by Hour of Day</p>
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 16 }}>Alerts by Hour of Day</p>
             <BarChart width={barWidth - 40} height={180} data={hourlyData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
               <XAxis dataKey="hour" tick={axisStyle} interval={3} />
@@ -157,8 +172,8 @@ export default function AnalyticsPage() {
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignContent: 'start' }}>
             <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', gridColumn: '1/-1', marginBottom: 4 }}>Summary</p>
             {[
-              { label: 'Total Incidents', value: rows.length, color: 'var(--text-primary)' },
-              { label: 'Auto Detected', value: triggerData[0].value, color: COLORS.auto },
+              { label: 'Total Alerts', value: rows.length, color: 'var(--text-primary)' },
+              { label: 'Auto / Crashes', value: triggerData[0].value, color: COLORS.auto },
               { label: 'Manual SOS', value: triggerData[1].value, color: COLORS.manual },
               { label: 'Auto Rate', value: rows.length ? `${Math.round((triggerData[0].value / rows.length) * 100)}%` : '—', color: COLORS.auto },
             ].map(s => (
