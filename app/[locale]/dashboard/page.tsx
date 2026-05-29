@@ -567,8 +567,6 @@ export default function DashboardPage() {
   }, []);
 
   const filtered = useMemo(() => incidents.filter(i => filter === 'all' || i.triggerType === filter), [incidents, filter]);
-  const activeCount = useMemo(() => incidents.filter(i => i.status !== 'resolved').length, [incidents]);
-  const resolvedCount = useMemo(() => incidents.filter(i => i.status === 'resolved').length, [incidents]);
   // Crashes the driver cancelled (or a dispatcher marked false-alarm) are
   // dropped from the map entirely — the driver is safe, no responder needed.
   // Genuine resolved crashes still show (as green) for situational awareness.
@@ -577,6 +575,18 @@ export default function DashboardPage() {
     [crashLogs],
   );
   const unresolvedCrashes = useMemo(() => mapCrashLogs.filter(c => !c.resolved).length, [mapCrashLogs]);
+
+  // Top-line stats count BOTH incidents and crashes — a crash that sent an SOS
+  // is an emergency alert just like a manual incident. Without this, ACTIVE and
+  // SOS ALERTS read 0 whenever the incidents table is empty even though there
+  // are live crashes awaiting a responder.
+  const resolvedCrashes = useMemo(() => mapCrashLogs.filter(c => c.resolved).length, [mapCrashLogs]);
+  const activeIncidents = useMemo(() => incidents.filter(i => i.status !== 'resolved').length, [incidents]);
+  const resolvedIncidents = useMemo(() => incidents.filter(i => i.status === 'resolved').length, [incidents]);
+  const activeCount = activeIncidents + unresolvedCrashes;        // unresolved emergencies
+  const totalAlerts = incidents.length + mapCrashLogs.length;     // every alert dispatched
+  const resolvedCount = resolvedIncidents + resolvedCrashes;
+  const resolvedPct = totalAlerts > 0 ? Math.round((resolvedCount / totalAlerts) * 100) : 0;
 
   // Crash logs shown in the left feed — newest first. Crashes are auto-detected,
   // so the "Manual" filter hides them (it only makes sense for SOS incidents).
@@ -633,7 +643,7 @@ export default function DashboardPage() {
         {/* Feed header */}
         <div style={{ padding: '16px 16px 12px 20px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
           <div style={{ marginBottom: 12 }}>
-            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-muted)', marginBottom: 2 }}>Active Incidents</p>
+            <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-muted)', marginBottom: 2 }}>Active Alerts</p>
             <p style={{
               fontFamily: 'var(--font-inter)',
               fontSize: isMobile ? 44 : 72,
@@ -721,9 +731,9 @@ export default function DashboardPage() {
         }}>
           <StatCard label="Active" value={activeCount} color="var(--red)" delay={0} />
           <StatCard label="Crashes" value={unresolvedCrashes} color="var(--amber)" delay={0.05} />
-          <StatCard label="SOS Alerts" value={incidents.length} color="var(--blue)" delay={0.1} />
+          <StatCard label="SOS Alerts" value={totalAlerts} color="var(--blue)" delay={0.1} />
           <StatCard label="Responders" value={responders.length} color="var(--green)" delay={0.15} />
-          <StatCard label="Resolved" value={`${incidents.length > 0 ? Math.round((resolvedCount / incidents.length) * 100) : 0}%`} color="var(--purple)" delay={0.2} />
+          <StatCard label="Resolved" value={`${resolvedPct}%`} color="var(--purple)" delay={0.2} />
         </div>
 
         <div style={{ flex: 1, minHeight: isMobile ? 320 : 0, position: 'relative', overflow: 'hidden' }} className="map-scanline">
