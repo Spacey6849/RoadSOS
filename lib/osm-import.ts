@@ -71,10 +71,11 @@ export async function importOsmArea(
   lng: number,
   radiusKm: number,
   existing: { osmIds: Set<string>; coords: Set<string> },
+  onProgress?: (msg: string) => void,
 ): Promise<ImportResult> {
   let fetched: OsmService[];
   try {
-    fetched = await fetchOsmServices(lat, lng, radiusKm);
+    fetched = await fetchOsmServices(lat, lng, radiusKm, onProgress);
   } catch (e) {
     return { fetched: 0, inserted: 0, skipped: 0, error: e instanceof Error ? e.message : 'Overpass fetch failed' };
   }

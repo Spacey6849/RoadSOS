@@ -166,7 +166,8 @@ export default function ServicesPage() {
       const c = cities[i];
       if (!c) continue;
       setImportLog((prev) => [...prev, `↻ ${c.name} (${radius} km)…`]);
-      const res = await importOsmArea(c.lat, c.lng, radius, existing);
+      const appendProgress = (msg: string) => setImportLog((prev) => [...prev, msg]);
+      const res = await importOsmArea(c.lat, c.lng, radius, existing, appendProgress);
       if (res.error) {
         setImportLog((prev) => [...prev, `✗ ${c.name}: ${res.error}`]);
       } else {
@@ -174,7 +175,9 @@ export default function ServicesPage() {
         totalSkipped += res.skipped;
         setImportLog((prev) => [...prev, `✓ ${c.name}: +${res.inserted} new · ${res.skipped} already had`]);
       }
-      if (i < cities.length - 1) await sleep(1500);
+      // Pace the sweep so we don't trip the public Overpass rate limiter — a
+      // heavy metro query needs the limiter to recover before the next city.
+      if (i < cities.length - 1) await sleep(4000);
     }
 
     setImportDone({ inserted: totalInserted, skipped: totalSkipped });

@@ -13,15 +13,26 @@
 
 import type { ServiceType } from './types';
 
-// Public Overpass mirrors, tried in order — the main endpoint rate-limits, so a
-// fallback keeps an "import all cities" sweep from dying halfway through.
+// Public Overpass mirrors. Each round rotates which one is tried first so a
+// rate-limited "import all cities" sweep doesn't keep hammering the same host.
 const OVERPASS_ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
   'https://overpass.openstreetmap.ru/api/interpreter',
 ];
 
-const FETCH_TIMEOUT_MS = 45_000;
+// Heavy metro queries (60 km radius can return >2,500 elements) need server
+// time, so the client timeout has to comfortably exceed the in-query timeout.
+const QUERY_TIMEOUT_S = 90;
+const FETCH_TIMEOUT_MS = (QUERY_TIMEOUT_S + 10) * 1000;
+
+// Retry the whole mirror set this many rounds before giving up on an area.
+const MAX_ROUNDS = 4;
+// Back-off before each retry round — gives the public rate limiter time to
+// free a slot after a heavy query (the #1 cause of "Failed to fetch").
+const ROUND_BACKOFF_MS = [0, 6_000, 14_000, 25_000];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface OsmService {
   osmId: string; // "node/123", "way/456" — stable OSM identity, used for dedupe
@@ -124,7 +135,7 @@ function buildQuery(lat: number, lng: number, radiusKm: number): string {
   // polygons (ways), so node-only queries miss most of them. `out center tags`
   // gives a representative coordinate for ways/relations.
   return `
-[out:json][timeout:40];
+[out:json][timeout:${QUERY_TIMEOUT_S}];
 (
   nwr["amenity"="hospital"](around:${r},${lat},${lng});
   nwr["amenity"="clinic"](around:${r},${lat},${lng});
@@ -196,48 +207,75 @@ function toOsmService(el: OverpassElement): OsmService | null {
   };
 }
 
-// Fetch + normalize emergency services around a point. Tries each Overpass
-// mirror in turn; throws only if every mirror fails.
+function parseElements(data: OverpassResponse): OsmService[] {
+  const seen = new Set<string>();
+  const out: OsmService[] = [];
+  for (const el of data.elements ?? []) {
+    const svc = toOsmService(el);
+    if (!svc) continue;
+    // De-dupe within a single response (an entity can appear as both a node
+    // and the centroid of its way).
+    if (seen.has(svc.osmId)) continue;
+    seen.add(svc.osmId);
+    out.push(svc);
+  }
+  return out;
+}
+
+// One POST to one mirror. Returns parsed services, or throws on any failure so
+// the caller can rotate/retry.
+async function fetchFromMirror(endpoint: string, query: string): Promise<OsmService[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      body: `data=${encodeURIComponent(query)}`,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      signal: controller.signal,
+    });
+    // 429 = rate-limited, 504 = server-side query timeout — both are retryable.
+    if (res.status === 429) throw new Error('rate-limited (429)');
+    if (res.status === 504) throw new Error('server timeout (504)');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as OverpassResponse;
+    return parseElements(data);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Fetch + normalize emergency services around a point. Tries every mirror, and
+// on total failure backs off and retries up to MAX_ROUNDS times — the public
+// Overpass rate limiter rejects bursts of heavy queries, so a wait-and-retry is
+// what makes a full "import all cities" sweep reliable. `onAttempt` surfaces
+// progress to the UI ("rate-limited, retrying in 14s…"). Throws only after all
+// rounds are exhausted.
 export async function fetchOsmServices(
   lat: number,
   lng: number,
   radiusKm: number,
+  onAttempt?: (msg: string) => void,
 ): Promise<OsmService[]> {
   const query = buildQuery(lat, lng, radiusKm);
   let lastError: unknown = null;
 
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        body: `data=${encodeURIComponent(query)}`,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        lastError = new Error(`Overpass ${res.status} (${endpoint})`);
-        continue;
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    if (round > 0) {
+      const wait = ROUND_BACKOFF_MS[round] ?? 25_000;
+      const reason = lastError instanceof Error ? lastError.message : 'failed';
+      onAttempt?.(`   ${reason} — retrying in ${Math.round(wait / 1000)}s (${round + 1}/${MAX_ROUNDS})…`);
+      await sleep(wait);
+    }
+    // Rotate which mirror leads each round so we don't always start on a host
+    // that just rate-limited us.
+    for (let k = 0; k < OVERPASS_ENDPOINTS.length; k++) {
+      const endpoint = OVERPASS_ENDPOINTS[(round + k) % OVERPASS_ENDPOINTS.length]!;
+      try {
+        return await fetchFromMirror(endpoint, query);
+      } catch (e) {
+        lastError = e instanceof Error && e.name === 'AbortError' ? new Error('timeout') : e;
       }
-      const data = (await res.json()) as OverpassResponse;
-      const seen = new Set<string>();
-      const out: OsmService[] = [];
-      for (const el of data.elements ?? []) {
-        const svc = toOsmService(el);
-        if (!svc) continue;
-        // De-dupe within a single response (an entity can appear as both a node
-        // and the centroid of its way).
-        if (seen.has(svc.osmId)) continue;
-        seen.add(svc.osmId);
-        out.push(svc);
-      }
-      return out;
-    } catch (e) {
-      lastError = e;
-      // try next mirror
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
