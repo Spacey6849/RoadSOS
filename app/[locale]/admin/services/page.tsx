@@ -35,10 +35,16 @@ const MAX_NAME = 120;
 const MAX_ADDRESS = 240;
 const MAX_PHONE = 24;
 
+// Max rows rendered at once — the table can hold thousands after an OSM import,
+// but the DOM only needs a recent slice; search reaches the rest.
+const LIST_LIMIT = 300;
+
 export default function ServicesPage() {
   const { t } = useLanguage();
   const isMobile = useIsMobile();
   const [services, setServices] = useState<NearbyService[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -55,10 +61,29 @@ export default function ServicesPage() {
   const [importLog, setImportLog] = useState<string[]>([]);
   const [importDone, setImportDone] = useState<{ inserted: number; skipped: number } | null>(null);
 
-  const loadServices = useCallback(() => {
+  // We can hold 10k+ services after an OSM import, so the list never renders the
+  // whole table — it shows the true total (exact count) in the header and a
+  // capped, newest-first page of rows. Search narrows the page via a name/city
+  // filter so any specific service is still reachable.
+  const loadServices = useCallback((searchTerm = '') => {
     const supabase = createClient();
     setLoading(true);
-    supabase.from('services').select('*').limit(50).then(({ data }) => {
+    // Strip characters that have meaning in PostgREST's or() filter grammar
+    // (commas separate conditions, parens group them) so a stray "," can't
+    // break the query.
+    const term = searchTerm.trim().replace(/[(),*]/g, ' ').replace(/\s+/g, ' ').trim();
+
+    let countQuery = supabase.from('services').select('id', { count: 'exact', head: true });
+    let rowsQuery = supabase.from('services').select('*').order('created_at', { ascending: false }).limit(LIST_LIMIT);
+    if (term) {
+      const filter = `name.ilike.%${term}%,address.ilike.%${term}%,city.ilike.%${term}%`;
+      countQuery = countQuery.or(filter);
+      rowsQuery = rowsQuery.or(filter);
+    }
+
+    Promise.all([countQuery, rowsQuery]).then(([countRes, rowsRes]) => {
+      if (countRes.count != null) setTotalCount(countRes.count);
+      const data = rowsRes.data;
       if (data) setServices((data as ServiceRow[]).map((s) => ({
         id: s.id, name: s.name, service_type: s.service_type,
         address: s.address || '', primary_phone: s.primary_phone || '',
@@ -69,7 +94,11 @@ export default function ServicesPage() {
     });
   }, []);
 
-  useEffect(() => { loadServices(); }, [loadServices]);
+  // Debounced search — reload the page whenever the query settles.
+  useEffect(() => {
+    const id = setTimeout(() => loadServices(search), 300);
+    return () => clearTimeout(id);
+  }, [search, loadServices]);
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') setPanelOpen(false); };
     document.addEventListener('keydown', h);
@@ -118,7 +147,7 @@ export default function ServicesPage() {
       else { const { error } = await supabase.from('services').insert(payload); if (error) throw error; }
       setPanelOpen(false); setEditingId(null);
       setForm({ name: '', service_type: 'hospital', primary_phone: '', address: '', lat: '', lng: '' });
-      loadServices();
+      loadServices(search);
     } catch (err: unknown) { setFormError(err instanceof Error ? err.message : 'Save failed'); }
     setSaving(false);
   }
@@ -139,7 +168,7 @@ export default function ServicesPage() {
       setDeleteError(`Delete failed: ${error.message}`);
       return;
     }
-    loadServices();
+    loadServices(search);
   }
 
   // ── OpenStreetMap import ────────────────────────────────────────────────
@@ -182,7 +211,7 @@ export default function ServicesPage() {
 
     setImportDone({ inserted: totalInserted, skipped: totalSkipped });
     setImporting(false);
-    loadServices();
+    loadServices(search);
   }
 
   function handleImportCity() {
@@ -207,7 +236,7 @@ export default function ServicesPage() {
         <div>
           <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-faint)', marginBottom: 4 }}>Admin / Services</p>
           <h1 style={{ fontSize: 24, fontWeight: 300, color: 'var(--text-primary)', letterSpacing: -0.5 }}>Emergency Services</h1>
-          <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{services.length} registered</p>
+          <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{totalCount.toLocaleString('en-IN')} registered</p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
           <button
@@ -225,6 +254,28 @@ export default function ServicesPage() {
         </div>
       </div>
 
+      {/* Search — the only way to reach a specific row once the table holds
+          thousands of imported services (the list renders a capped page). */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search name, address or city…"
+          style={{
+            flex: 1, minWidth: 200, height: 38, padding: '0 14px',
+            background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6,
+            color: 'var(--text-primary)', fontSize: 13, outline: 'none',
+          }}
+        />
+        {!loading && (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>
+            {totalCount > services.length
+              ? `Showing ${services.length} of ${totalCount.toLocaleString('en-IN')}`
+              : `${services.length} shown`}
+          </span>
+        )}
+      </div>
+
       {deleteError && (
         <p style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>{deleteError}</p>
       )}
@@ -236,8 +287,12 @@ export default function ServicesPage() {
         </div>
       ) : services.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '80px 0' }}>
-          <p style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 16 }}>No services registered</p>
-          <button onClick={() => setPanelOpen(true)} style={{ height: 36, padding: '0 16px', background: 'var(--red)', color: '#fff', fontFamily: 'var(--font-mono)', fontSize: 13, borderRadius: 6, cursor: 'pointer' }}>+ Add Service</button>
+          <p style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 16 }}>
+            {search.trim() ? `No services match “${search.trim()}”` : 'No services registered'}
+          </p>
+          {!search.trim() && (
+            <button onClick={() => setPanelOpen(true)} style={{ height: 36, padding: '0 16px', background: 'var(--red)', color: '#fff', fontFamily: 'var(--font-mono)', fontSize: 13, borderRadius: 6, cursor: 'pointer' }}>+ Add Service</button>
+          )}
         </div>
       ) : (
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
