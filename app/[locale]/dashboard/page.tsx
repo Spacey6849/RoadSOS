@@ -517,14 +517,15 @@ export default function DashboardPage() {
   const isMobile = useIsMobile();
 
   const mapCenter = useMemo<[number, number] | undefined>(() => {
+    // Crashes are the reliable source of coordinates (the native detector
+    // always records GPS); SOS incidents frequently have a NULL location.
+    // So center on a crash first, then fall back to a located incident, then
+    // the dispatcher's own location.
+    const crash = mapCrashLogs.find(c => c.location);
+    if (crash?.location) return [crash.location.lat, crash.location.lng];
     if (userLocation) return userLocation;
     const inc = incidents.find(i => i.location);
     if (inc?.location) return [inc.location.lat, inc.location.lng];
-    // Fall back to first crash with coords — without this the map sits at
-    // the India-wide default zoom and small markers in (e.g.) Goa are
-    // invisible until the user manually pans.
-    const crash = mapCrashLogs.find(c => c.location);
-    if (crash?.location) return [crash.location.lat, crash.location.lng];
     return undefined;
   }, [userLocation, incidents, mapCrashLogs]);
 
@@ -683,10 +684,16 @@ export default function DashboardPage() {
             showHeat={showHeat}
             onResolveCrash={handleResolveCrash}
           />
-          {/* Show info when no incidents have location data */}
-          {showMarkers && incidents.length > 0 && incidents.filter(i => i.location).length === 0 && (
+          {/* Only warn when there is genuinely nothing plottable — i.e. no
+              crash has coordinates AND no incident has coordinates. Crashes
+              are the primary map data, so as long as a crash has GPS the map
+              has markers and this banner stays hidden. */}
+          {showMarkers
+            && mapCrashLogs.filter(c => c.location).length === 0
+            && incidents.filter(i => i.location).length === 0
+            && (mapCrashLogs.length > 0 || incidents.length > 0) && (
             <div style={{ position: 'absolute', bottom: 32, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, pointerEvents: 'none', background: 'rgba(17,17,17,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '6px 12px', fontFamily: 'var(--font-mono)', fontSize: 10, color: '#71717A', whiteSpace: 'nowrap' }}>
-              No GPS data — incidents exist but location not yet recorded
+              No GPS data yet — events exist but no location recorded
             </div>
           )}
 
