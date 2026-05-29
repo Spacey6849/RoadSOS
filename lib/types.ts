@@ -76,6 +76,7 @@ export interface Responder {
   lat: number;
   lng: number;
   type: string;
+  phone?: string;
   updatedAt: number;
 }
 

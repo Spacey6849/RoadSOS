@@ -330,9 +330,23 @@ export default function ResponderMap({
         {showMarkers && responders.filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng)).map(r => (
           <Marker key={r.id} position={[r.lat, r.lng]} icon={responderIcon}>
             <Popup>
-              <div style={{ minWidth: 120 }}>
+              <div style={{ minWidth: 140 }}>
                 <strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>{r.name}</strong>
                 <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, textTransform: 'capitalize' }}>{r.type} responder</p>
+                {r.phone ? (
+                  <a
+                    href={`tel:${r.phone}`}
+                    style={{
+                      display: 'inline-block', marginTop: 8,
+                      fontFamily: 'var(--font-mono)', fontSize: 12, color: '#0A84FF',
+                      textDecoration: 'none', fontWeight: 600,
+                    }}
+                  >
+                    📞 {r.phone}
+                  </a>
+                ) : (
+                  <p style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 6, fontStyle: 'italic' }}>No contact number</p>
+                )}
               </div>
             </Popup>
           </Marker>

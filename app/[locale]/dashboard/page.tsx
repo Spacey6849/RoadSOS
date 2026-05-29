@@ -144,6 +144,7 @@ export default function DashboardPage() {
   const seenIds = useRef<Set<string>>(new Set());
   const channelRef = useRef<any>(null);
   const responderChannelRef = useRef<any>(null);
+  const respondersDbChannelRef = useRef<any>(null);
   const crashChannelRef = useRef<any>(null);
   const dispatchChannelRef = useRef<any>(null);
   const supabaseRef = useRef<any>(null);
@@ -180,6 +181,25 @@ export default function DashboardPage() {
         if (crashData) setCrashLogs(crashData.map(mapCrashLog));
       } catch {}
 
+      // Persisted on-duty responders — so the dispatcher sees them (with phone)
+      // immediately on load, before the next ephemeral location broadcast, and
+      // after a page refresh. The live broadcast then keeps positions fresh.
+      try {
+        const { data: respData } = await supabase
+          .from('responders')
+          .select('id,name,type,phone,lat,lng,on_duty,updated_at')
+          .eq('on_duty', true);
+        if (respData) {
+          setResponders(respData
+            .filter((r: any) => Number.isFinite(Number(r.lat)) && Number.isFinite(Number(r.lng)))
+            .map((r: any) => ({
+              id: r.id, name: r.name || 'Responder', type: r.type || 'ambulance',
+              phone: r.phone || undefined, lat: Number(r.lat), lng: Number(r.lng),
+              updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
+            })));
+        }
+      } catch {}
+
       channelRef.current = supabase.channel('incidents-web')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'incidents' }, (payload: any) => {
           const inc = mapIncident(payload.new);
@@ -211,10 +231,10 @@ export default function DashboardPage() {
             const idx = prev.findIndex(r => r.id === payload.responderId);
             if (idx >= 0) {
               const next = [...prev];
-              next[idx] = { ...next[idx], lat: payload.lat, lng: payload.lng, updatedAt: Date.now() };
+              next[idx] = { ...next[idx], lat: payload.lat, lng: payload.lng, phone: payload.phone ?? next[idx].phone, updatedAt: Date.now() };
               return next;
             }
-            return [...prev, { id: payload.responderId, name: payload.name || 'Responder', lat: payload.lat, lng: payload.lng, type: payload.responderType || 'ambulance', updatedAt: Date.now() }];
+            return [...prev, { id: payload.responderId, name: payload.name || 'Responder', lat: payload.lat, lng: payload.lng, type: payload.responderType || 'ambulance', phone: payload.phone, updatedAt: Date.now() }];
           });
         }).subscribe();
 
@@ -269,11 +289,32 @@ export default function DashboardPage() {
           if (!r?.crashId || !r?.responderId) return;
           handleResponderResponse(r);
         }).subscribe();
+
+      // Responders table — keeps the roster + contact info fresh and drops a
+      // pin when a responder ends their shift (on_duty=false).
+      respondersDbChannelRef.current = supabase.channel('responders-web')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'responders' }, (payload: any) => {
+          const row = payload.new ?? payload.old;
+          if (!row?.id) return;
+          const removed = payload.eventType === 'DELETE' || row.on_duty === false;
+          if (removed) {
+            setResponders(prev => prev.filter(r => r.id !== row.id));
+            return;
+          }
+          if (!Number.isFinite(Number(row.lat)) || !Number.isFinite(Number(row.lng))) return;
+          setResponders(prev => {
+            const next = { id: row.id, name: row.name || 'Responder', type: row.type || 'ambulance', phone: row.phone || undefined, lat: Number(row.lat), lng: Number(row.lng), updatedAt: Date.now() };
+            const idx = prev.findIndex(r => r.id === row.id);
+            if (idx >= 0) { const copy = [...prev]; copy[idx] = { ...copy[idx], ...next }; return copy; }
+            return [...prev, next];
+          });
+        }).subscribe();
     }
     init();
     return () => {
       if (channelRef.current) supabaseRef.current?.removeChannel(channelRef.current);
       if (responderChannelRef.current) supabaseRef.current?.removeChannel(responderChannelRef.current);
+      if (respondersDbChannelRef.current) supabaseRef.current?.removeChannel(respondersDbChannelRef.current);
       if (crashChannelRef.current) supabaseRef.current?.removeChannel(crashChannelRef.current);
       if (dispatchChannelRef.current) supabaseRef.current?.removeChannel(dispatchChannelRef.current);
       // Cancel any pending assignment timers
@@ -445,7 +486,14 @@ export default function DashboardPage() {
   const filtered = useMemo(() => incidents.filter(i => filter === 'all' || i.triggerType === filter), [incidents, filter]);
   const activeCount = useMemo(() => incidents.filter(i => i.status !== 'resolved').length, [incidents]);
   const resolvedCount = useMemo(() => incidents.filter(i => i.status === 'resolved').length, [incidents]);
-  const unresolvedCrashes = useMemo(() => crashLogs.filter(c => !c.resolved).length, [crashLogs]);
+  // Crashes the driver cancelled (or a dispatcher marked false-alarm) are
+  // dropped from the map entirely — the driver is safe, no responder needed.
+  // Genuine resolved crashes still show (as green) for situational awareness.
+  const mapCrashLogs = useMemo(
+    () => crashLogs.filter(c => c.outcome !== 'cancelled' && c.outcome !== 'false-alarm'),
+    [crashLogs],
+  );
+  const unresolvedCrashes = useMemo(() => mapCrashLogs.filter(c => !c.resolved).length, [mapCrashLogs]);
 
   const filters: { key: typeof filter; label: string }[] = [
     { key: 'all', label: 'All' }, { key: 'auto', label: 'Auto' }, { key: 'manual', label: 'Manual' },
@@ -460,10 +508,10 @@ export default function DashboardPage() {
     // Fall back to first crash with coords — without this the map sits at
     // the India-wide default zoom and small markers in (e.g.) Goa are
     // invisible until the user manually pans.
-    const crash = crashLogs.find(c => c.location);
+    const crash = mapCrashLogs.find(c => c.location);
     if (crash?.location) return [crash.location.lat, crash.location.lng];
     return undefined;
-  }, [userLocation, incidents, crashLogs]);
+  }, [userLocation, incidents, mapCrashLogs]);
 
   return (
     <div style={{
@@ -611,7 +659,7 @@ export default function DashboardPage() {
           <MapWithNoSSR
             responders={responders}
             incidents={incidents}
-            crashLogs={crashLogs}
+            crashLogs={mapCrashLogs}
             center={mapCenter}
             userLocation={userLocation}
             showMarkers={showMarkers}
