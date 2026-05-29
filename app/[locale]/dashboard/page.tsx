@@ -111,6 +111,71 @@ function IncidentRow({ incident, isNew, isFirst }: { incident: Incident; isNew: 
   );
 }
 
+/* ─── Crash Row (left feed) ─── */
+function crashSeverity(g: number, jerk: number): { label: string; color: string } {
+  if (g > 3 || jerk > 15) return { label: 'CRITICAL', color: 'var(--red)' };
+  if (g > 1.5) return { label: 'MODERATE', color: 'var(--amber)' };
+  return { label: 'MINOR', color: 'var(--text-muted)' };
+}
+
+function CrashRow({ crash, onFocus }: { crash: CrashLog; onFocus: () => void }) {
+  const sev = crashSeverity(crash.gForce, crash.jerkGs);
+  const time = new Date(crash.detectedAt).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const loc = crash.address || (crash.location ? `${crash.location.lat.toFixed(4)}, ${crash.location.lng.toFixed(4)}` : 'No location recorded');
+  const base = crash.resolved ? 'transparent' : 'color-mix(in srgb, var(--red) 4%, transparent)';
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.25 }}
+      onClick={onFocus}
+      title="Focus on map"
+      style={{
+        padding: '10px 16px 10px 14px',
+        borderBottom: '0.5px solid var(--border)',
+        borderLeft: `2px solid ${sev.color}`,
+        cursor: crash.location ? 'pointer' : 'default',
+        background: base,
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = base; }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: sev.color, border: `1px solid ${sev.color}`, borderRadius: 3, padding: '1px 5px' }}>
+          {sev.label}
+        </span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+          {crash.gForce.toFixed(2)}g
+        </span>
+        {crash.resolved && (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', padding: '1px 5px', borderRadius: 2, background: 'color-mix(in srgb, var(--green) 12%, transparent)', color: 'var(--green)' }}>
+            Resolved
+          </span>
+        )}
+        <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>{time}</span>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {loc}
+      </div>
+    </motion.div>
+  );
+}
+
+/* Small uppercase section label inside the feed. */
+function FeedSectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p style={{
+      fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.1em',
+      color: 'var(--text-faint)', padding: '10px 16px 6px 14px', borderBottom: '0.5px solid var(--border)',
+      background: 'var(--bg)', position: 'sticky', top: 0, zIndex: 1,
+    }}>
+      {children}
+    </p>
+  );
+}
+
 /* ─── Main Dashboard ─── */
 export default function DashboardPage() {
   const { t } = useLanguage();
@@ -119,6 +184,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'auto' | 'manual'>('all');
+  // Set when a crash row is clicked — overrides the auto-computed map center
+  // so the map flies to that crash.
+  const [focusCenter, setFocusCenter] = useState<[number, number] | null>(null);
   const [userLocation, setUserLocation] = useState<[number, number] | undefined>(undefined);
   const [accentFlash, setAccentFlash] = useState(false);
   const [showMarkers, setShowMarkers] = useState(true);
@@ -510,6 +578,13 @@ export default function DashboardPage() {
   );
   const unresolvedCrashes = useMemo(() => mapCrashLogs.filter(c => !c.resolved).length, [mapCrashLogs]);
 
+  // Crash logs shown in the left feed — newest first. Crashes are auto-detected,
+  // so the "Manual" filter hides them (it only makes sense for SOS incidents).
+  const feedCrashes = useMemo(
+    () => (filter === 'manual' ? [] : [...mapCrashLogs].sort((a, b) => b.detectedAt - a.detectedAt)),
+    [mapCrashLogs, filter],
+  );
+
   const filters: { key: typeof filter; label: string }[] = [
     { key: 'all', label: 'All' }, { key: 'auto', label: 'Auto' }, { key: 'manual', label: 'Manual' },
   ];
@@ -587,20 +662,43 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Feed list */}
+        {/* Feed list — crash logs first (the primary live events, each click
+            focuses the map), then SOS incidents. Crashes are auto-detected so
+            they're hidden under the "Manual" filter. */}
         <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {loading ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 120 }}>
               <div style={{ width: 16, height: 16, border: '2px solid var(--border)', borderTopColor: 'var(--text-primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
             </div>
-          ) : filtered.length === 0 ? (
-            <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13, padding: '48px 16px' }}>No incidents</p>
+          ) : (feedCrashes.length === 0 && filtered.length === 0) ? (
+            <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13, padding: '48px 16px' }}>No activity</p>
           ) : (
-            <AnimatePresence initial={false}>
-              {filtered.map((inc, idx) => (
-                <IncidentRow key={inc.id} incident={inc} isNew={!seenIds.current.has(inc.id)} isFirst={idx === 0} />
-              ))}
-            </AnimatePresence>
+            <>
+              {feedCrashes.length > 0 && (
+                <>
+                  <FeedSectionLabel>Crash Logs · {feedCrashes.length}</FeedSectionLabel>
+                  <AnimatePresence initial={false}>
+                    {feedCrashes.map((c) => (
+                      <CrashRow
+                        key={c.id}
+                        crash={c}
+                        onFocus={() => { if (c.location) setFocusCenter([c.location.lat, c.location.lng]); }}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </>
+              )}
+              {filtered.length > 0 && (
+                <>
+                  <FeedSectionLabel>Incidents · {filtered.length}</FeedSectionLabel>
+                  <AnimatePresence initial={false}>
+                    {filtered.map((inc, idx) => (
+                      <IncidentRow key={inc.id} incident={inc} isNew={!seenIds.current.has(inc.id)} isFirst={idx === 0} />
+                    ))}
+                  </AnimatePresence>
+                </>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -676,7 +774,7 @@ export default function DashboardPage() {
             responders={responders}
             incidents={incidents}
             crashLogs={mapCrashLogs}
-            center={mapCenter}
+            center={focusCenter ?? mapCenter}
             userLocation={userLocation}
             showMarkers={showMarkers}
             showCrashes={showCrashes}
