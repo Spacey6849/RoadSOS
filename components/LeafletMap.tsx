@@ -3,6 +3,7 @@ import { View, ActivityIndicator, StyleSheet, Text } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Colors, Typography, Spacing } from '../constants/theme';
 import { LEAFLET_CSS, LEAFLET_JS } from './leaflet-inline';
+import { getCachedTileDataUri } from '../lib/tile-cache';
 
 interface MarkerData {
   id: string;
@@ -77,11 +78,41 @@ const buildHtml = (initialCenter: { lat: number; lng: number }, initialZoom: num
   var map = L.map('map', { zoomControl: false, attributionControl: false })
     .setView([${initialCenter.lat}, ${initialCenter.lng}], ${initialZoom});
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    crossOrigin: true,
-    // OSM appreciates a User-Agent / referrer; raw WebView requests usually carry one.
-  }).addTo(map);
+  // Offline-aware tile layer. Each tile is requested from the native side via
+  // postMessage; native replies with a cached base64 PNG (works offline) or
+  // null, in which case we fall back to the live OSM URL. A timeout also falls
+  // back to network so a missed reply never leaves a permanent blank tile.
+  var pendingTiles = {};
+  var reqSeq = 0;
+  function tileFallbackUrl(z, x, y) {
+    return 'https://tile.openstreetmap.org/' + z + '/' + x + '/' + y + '.png';
+  }
+
+  var OfflineTileLayer = L.GridLayer.extend({
+    createTile: function (coords, done) {
+      var img = document.createElement('img');
+      img.setAttribute('role', 'presentation');
+      img.alt = '';
+      var z = coords.z, x = coords.x, y = coords.y;
+      var reqId = 'q' + (reqSeq++);
+      var settled = false;
+      function settle(src) {
+        if (settled) return;
+        settled = true;
+        delete pendingTiles[reqId];
+        img.onload = function () { done(null, img); };
+        // A blank tile must not error the whole map — just resolve empty.
+        img.onerror = function () { done(null, img); };
+        img.src = src;
+      }
+      pendingTiles[reqId] = function (data) { settle(data || tileFallbackUrl(z, x, y)); };
+      setTimeout(function () { settle(tileFallbackUrl(z, x, y)); }, 6000);
+      safePost({ type: 'tileRequest', reqId: reqId, z: z, x: x, y: y });
+      return img;
+    }
+  });
+
+  new OfflineTileLayer({ maxZoom: 19, tileSize: 256 }).addTo(map);
 
   var markers = {};
   var focusedId = null;
@@ -150,6 +181,10 @@ const buildHtml = (initialCenter: { lat: number; lng: number }, initialZoom: num
       else if (msg.type === 'removeMarker') removeMarker(msg.id);
       else if (msg.type === 'clearMarkers') { clearMarkers(); focusedId = null; }
       else if (msg.type === 'focusMarker') { clearMarkers(); focusedId = msg.id; }
+      else if (msg.type === 'tileData') {
+        var cb = pendingTiles[msg.reqId];
+        if (cb) cb(msg.data);
+      }
     } catch (e) {
       safePost({ type: 'error', message: 'handleMessage failed: ' + String(e) });
     }
@@ -255,7 +290,13 @@ export function LeafletMap({ center, zoom = 13, markers = [], focusedMarker, onE
             try {
               const msg = JSON.parse(event.nativeEvent.data);
               if (msg.type === 'ready') setLoaded(true);
-              if (msg.type === 'error') {
+              else if (msg.type === 'tileRequest') {
+                // Serve a cached tile if we have it; null tells the WebView to
+                // fetch the tile live (online) instead.
+                getCachedTileDataUri(msg.z, msg.x, msg.y)
+                  .then((data) => postMsg({ type: 'tileData', reqId: msg.reqId, data }))
+                  .catch(() => postMsg({ type: 'tileData', reqId: msg.reqId, data: null }));
+              } else if (msg.type === 'error') {
                 // Swallow non-fatal map errors — only mark errored if we never loaded.
                 if (!loaded) {
                   setErrored(true);
@@ -279,6 +320,11 @@ export function LeafletMap({ center, zoom = 13, markers = [], focusedMarker, onE
           }}
           javaScriptEnabled
           domStorageEnabled
+          // Step A — let the WebView serve previously-fetched tiles from its
+          // own HTTP cache when offline (covers areas the user panned to while
+          // online, on top of the filesystem pre-cache below).
+          cacheEnabled
+          cacheMode="LOAD_CACHE_ELSE_NETWORK"
           scrollEnabled={false}
           bounces={false}
           showsVerticalScrollIndicator={false}

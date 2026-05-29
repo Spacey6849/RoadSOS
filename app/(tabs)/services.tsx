@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Dimensions, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ChevronDown, ChevronUp, MapPin, RefreshCw, Search } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,6 +10,7 @@ import { serviceVisual } from '../../constants/serviceVisuals';
 import { TAB_BAR_TOTAL } from '../../constants/layout';
 import { useLocation } from '../../hooks/useLocation';
 import { useNearbyServices } from '../../hooks/useNearbyServices';
+import { cacheRegion, getCacheInfo } from '../../lib/tile-cache';
 import { ServiceType } from '../../types';
 
 const INDIA_CENTER = { lat: 20.5937, lng: 78.9629 };
@@ -31,6 +32,9 @@ export default function ServicesScreen() {
   const { location, refresh: refreshLocation } = useLocation();
   const [filter, setFilter] = useState<ServiceType | 'all'>('all');
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [mapCacheStatus, setMapCacheStatus] = useState<'idle' | 'caching' | 'ready'>('idle');
+  const [cachePct, setCachePct] = useState(0);
+  const cachedKeyRef = useRef<string | null>(null);
   const { services, isOffline, isLoading, cacheAge, region, dataSource, refresh } = useNearbyServices(
     location?.lat ?? null,
     location?.lng ?? null,
@@ -92,10 +96,39 @@ export default function ServicesScreen() {
     [services],
   );
 
+  // Reflect any tiles already on disk as "ready" on mount.
+  useEffect(() => {
+    getCacheInfo()
+      .then((info) => { if (info.tiles > 0) setMapCacheStatus((s) => (s === 'idle' ? 'ready' : s)); })
+      .catch(() => {});
+  }, []);
+
+  // Pre-download map tiles around the user while online so the map still
+  // renders offline. Keyed to a ~1 km grid cell so it runs once per area, not
+  // on every GPS tick, and only when we have a live connection.
+  useEffect(() => {
+    if (!location || isOffline) return;
+    const key = `${location.lat.toFixed(2)},${location.lng.toFixed(2)}`;
+    if (cachedKeyRef.current === key) return;
+    cachedKeyRef.current = key;
+    setMapCacheStatus('caching');
+    setCachePct(0);
+    cacheRegion(location.lat, location.lng, {}, (p) => {
+      setCachePct(p.total ? Math.round((p.done / p.total) * 100) : 0);
+    })
+      .then((res) => { if (!res.skipped) setMapCacheStatus('ready'); })
+      .catch(() => setMapCacheStatus((s) => (s === 'caching' ? 'idle' : s)));
+  }, [location, isOffline]);
+
   async function refreshAll() {
     await refreshLocation();
     await Promise.resolve(refresh());
   }
+
+  const mapCacheNote =
+    mapCacheStatus === 'caching' ? `  ·  Saving offline map ${cachePct}%`
+    : mapCacheStatus === 'ready' ? '  ·  Offline map ready'
+    : '';
 
   const freshness = cacheAge ? `Cached ${Math.max(1, Math.round(cacheAge / 3600000))}h ago` : dataSource;
 
@@ -117,7 +150,7 @@ export default function ServicesScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>Nearby services</Text>
             <Text style={styles.subtitle} numberOfLines={1}>
-              {region ? region.name : location ? 'Searching nearby' : 'Waiting for location'}
+              {(region ? region.name : location ? 'Searching nearby' : 'Waiting for location') + mapCacheNote}
             </Text>
           </View>
           <StatusPill label={isOffline ? freshness : 'Live'} tone={isOffline ? 'amber' : 'green'} />
