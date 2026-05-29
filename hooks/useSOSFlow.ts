@@ -54,12 +54,22 @@ export function useSOSFlow() {
         // Best-effort Supabase incident log — never blocks SMS.
         // Use .then(onFulfilled, onRejected) instead of .then().catch() because
         // supabase's PostgrestFilterBuilder is typed as PromiseLike (no .catch).
+        //
+        // location is a PostGIS geography column — send WKT `POINT(lng lat)`
+        // (lng first, GeoJSON/PostGIS order) so the row gets coordinates and
+        // the dashboard can plot it. Without this the incident shows in the
+        // feed but never appears as a map marker. Only include it when we have
+        // a real fix (not 0,0).
+        const hasFix =
+          Number.isFinite(location.lat) && Number.isFinite(location.lng) &&
+          !(location.lat === 0 && location.lng === 0);
         supabase.from('incidents').insert({
           id: incidentId,
           user_name: userName,
           blood_group: profile?.bloodGroup,
           trigger_type: triggerType,
           address: location.address,
+          ...(hasFix && { location: `POINT(${location.lng} ${location.lat})` }),
           country_code: 'IN',
           status: 'active',
         }).then(undefined, () => {});
