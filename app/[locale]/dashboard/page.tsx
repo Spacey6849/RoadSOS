@@ -117,6 +117,7 @@ export default function DashboardPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [responders, setResponders] = useState<Responder[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'auto' | 'manual'>('all');
   const [userLocation, setUserLocation] = useState<[number, number] | undefined>(undefined);
   const [accentFlash, setAccentFlash] = useState(false);
@@ -164,22 +165,36 @@ export default function DashboardPage() {
 
     async function init() {
       try {
-        const { data } = await supabase.from('incidents').select('*').order('created_at', { ascending: false }).limit(20);
+        const { data, error } = await supabase.from('incidents').select('*').order('created_at', { ascending: false }).limit(20);
+        if (error) throw error;
         if (data) {
           const mapped = data.map(mapIncident);
           mapped.forEach(i => seenIds.current.add(i.id));
           setIncidents(mapped);
         }
-      } catch {} finally { setLoading(false); }
+      } catch (e: any) {
+        // Surface the real cause instead of a silent blank map. The #1 culprit
+        // is a stale NEXT_PUBLIC_SUPABASE_ANON_KEY on the deploy host (Vercel),
+        // which returns 401/"Invalid API key" here.
+        setLoadError(e?.message ? `Data load failed: ${e.message}` : 'Data load failed (check Supabase key / network).');
+        if (typeof console !== 'undefined') console.error('[dashboard] incidents load failed:', e);
+      } finally { setLoading(false); }
 
       try {
-        const { data: crashData } = await supabase
+        const { data: crashData, error } = await supabase
           .from('crash_logs')
           .select('id,detected_at,device_platform,mode,sensitivity,g_force,jerk_gs,latitude,longitude,address,outcome,resolved,resolved_at')
           .order('detected_at', { ascending: false })
           .limit(50);
-        if (crashData) setCrashLogs(crashData.map(mapCrashLog));
-      } catch {}
+        if (error) throw error;
+        if (crashData) {
+          setCrashLogs(crashData.map(mapCrashLog));
+          setLoadError(null); // crashes loaded fine — clear any earlier error
+        }
+      } catch (e: any) {
+        setLoadError(e?.message ? `Crash logs failed: ${e.message}` : 'Crash logs failed to load.');
+        if (typeof console !== 'undefined') console.error('[dashboard] crash_logs load failed:', e);
+      }
 
       // Persisted on-duty responders — so the dispatcher sees them (with phone)
       // immediately on load, before the next ephemeral location broadcast, and
@@ -672,6 +687,20 @@ export default function DashboardPage() {
           {showMarkers && incidents.length > 0 && incidents.filter(i => i.location).length === 0 && (
             <div style={{ position: 'absolute', bottom: 32, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, pointerEvents: 'none', background: 'rgba(17,17,17,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '6px 12px', fontFamily: 'var(--font-mono)', fontSize: 10, color: '#71717A', whiteSpace: 'nowrap' }}>
               No GPS data — incidents exist but location not yet recorded
+            </div>
+          )}
+
+          {/* Data-load error banner — makes a silent fetch/auth failure visible
+              (e.g. a stale Supabase key on the deploy host) instead of a blank map. */}
+          {loadError && (
+            <div style={{
+              position: 'absolute', bottom: 12, left: 12, right: 12, zIndex: 1100,
+              background: 'rgba(255,59,48,0.95)', color: '#fff',
+              borderRadius: 6, padding: '8px 12px',
+              fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
+              boxShadow: '0 6px 18px rgba(255,59,48,0.4)',
+            }}>
+              ⚠ {loadError}
             </div>
           )}
 
