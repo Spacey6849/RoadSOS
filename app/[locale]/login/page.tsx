@@ -1,11 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import Link from 'next/link';
+import { useParams, useSearchParams } from 'next/navigation';
 import { useLanguage } from '@/lib/i18n/LanguageProvider';
-import { createClient } from '@/lib/supabase/client';
-import { Mail, Lock, AlertCircle, Loader2, Shield } from 'lucide-react';
+import { User, Lock, AlertCircle, Loader2, Shield } from 'lucide-react';
 
 // Only allow relative paths — same protection as auth/callback.
 function safeNext(raw: string | null, fallback: string): string {
@@ -16,39 +14,40 @@ function safeNext(raw: string | null, fallback: string): string {
 
 export default function LoginPage() {
   const { t } = useLanguage();
-  const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
   const locale = (params?.locale as string) || 'en';
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    if (!email.trim() || !password.trim()) {
-      setError(t('auth.required'));
+    if (!username.trim() || !password.trim()) {
+      setError('Username and password are required.');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      const supabase = createClient();
-      const { error: authError } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username.trim(), password }),
       });
-      if (authError) throw authError;
-      // Use the user's current locale, and respect ?next=... set by the
-      // middleware redirect (so a logged-out click on /hi/admin lands back
-      // there after sign-in instead of dumping the user on /en/dashboard).
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Login failed');
+      }
+      // Respect ?next=... set by the middleware redirect so a logged-out click
+      // on /hi/admin lands back there after sign-in.
       const next = safeNext(searchParams.get('next'), `/${locale}/dashboard`);
-      router.push(next);
+      // Full navigation (not router.push) so the new cookie is sent with the
+      // request and the middleware sees the session.
+      window.location.href = next;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg === 'Invalid login credentials' ? t('auth.invalidCredentials') : msg);
-    } finally {
+      setError(err instanceof Error ? err.message : 'Login failed');
       setLoading(false);
     }
   }
@@ -138,7 +137,7 @@ export default function LoginPage() {
 
           {/* Form */}
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {/* Email */}
+            {/* Username */}
             <div>
               <label
                 style={{
@@ -149,7 +148,7 @@ export default function LoginPage() {
                   marginBottom: 6,
                 }}
               >
-                {t('auth.email')}
+                Username
               </label>
               <div style={{ position: 'relative' }}>
                 <div
@@ -161,15 +160,15 @@ export default function LoginPage() {
                     pointerEvents: 'none',
                   }}
                 >
-                  <Mail size={16} color="var(--text-tertiary)" />
+                  <User size={16} color="var(--text-tertiary)" />
                 </div>
                 <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="admin"
                   autoCapitalize="none"
-                  autoComplete="email"
+                  autoComplete="username"
                   style={{
                     width: '100%',
                     padding: '0 14px 0 42px',
@@ -293,47 +292,10 @@ export default function LoginPage() {
           </form>
         </div>
 
-        {/* Footer Links */}
-        <div style={{ textAlign: 'center', marginTop: 20 }}>
-          <Link
-            href={`/${locale}/signup`}
-            style={{
-              color: 'var(--text-secondary)',
-              fontSize: 14,
-              fontWeight: 500,
-              textDecoration: 'none',
-              transition: 'color 0.15s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'var(--blue)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--text-secondary)';
-            }}
-          >
-            {t('auth.noAccount')}{' '}
-            <span style={{ color: 'var(--blue)', fontWeight: 600 }}>Sign up</span>
-          </Link>
-        </div>
-        <div style={{ textAlign: 'center', marginTop: 10 }}>
-          <Link
-            href={`/${locale}/dashboard`}
-            style={{
-              color: 'var(--text-tertiary)',
-              fontSize: 13,
-              textDecoration: 'none',
-              transition: 'color 0.15s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'var(--text-secondary)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--text-tertiary)';
-            }}
-          >
-            {t('auth.skip')}
-          </Link>
-        </div>
+        {/* Footer — single dispatcher account, no public signup */}
+        <p style={{ textAlign: 'center', marginTop: 18, color: 'var(--text-tertiary)', fontSize: 12, fontFamily: 'var(--font-mono)' }}>
+          Authorized dispatchers only
+        </p>
       </div>
     </div>
   );

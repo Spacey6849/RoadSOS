@@ -1,18 +1,22 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { updateSession } from '@/lib/supabase/middleware';
+import { SESSION_COOKIE, SESSION_TOKEN } from '@/lib/auth-config';
 
-// Routes that require an authenticated dispatcher session. Anything matching
-// these patterns gets redirected to /[locale]/login if there's no session.
+// Single-admin gate. A successful POST to /api/login sets the httpOnly
+// `rsos_admin` cookie; the middleware just checks for it. No Supabase auth
+// session involved — the dashboard reads data with the public anon key, which
+// already has the right RLS policies.
+//
+// Routes that require the admin cookie:
+//   /[locale]/dashboard, /[locale]/analytics, /[locale]/admin/*
+//   /[locale]/track/<incidentId>   (but NOT /track/family/<code>)
 //
 // Public routes (intentionally NOT gated):
-//   /[locale]/login, /[locale]/signup       — auth UI
-//   /[locale]/sos                           — public emergency SOS form
-//   /[locale]/track/family/[code]           — family tracking via shared code
+//   /[locale]/login                 — the login form itself
+//   /[locale]/sos                   — public emergency SOS form
+//   /[locale]/track/family/[code]   — family tracking via shared code
 //   /[locale]/ (root redirect)
-//   /ice/[id]                                — public ICE card (separately
-//                                              time-limited inside the page)
-//   /api/sos                                 — public SOS POST endpoint
-//   /auth/callback                           — OAuth code exchange
+//   /ice/[id]                       — public ICE card (time-limited in-page)
+//   /api/*                          — API routes
 const PROTECTED_RE = /^\/[a-z]{2}\/(dashboard|analytics|admin)(\/|$)/;
 const PROTECTED_TRACK_RE = /^\/[a-z]{2}\/track\/(?!family\/)[^/]+\/?$/;
 
@@ -20,18 +24,18 @@ function needsAuth(pathname: string): boolean {
   return PROTECTED_RE.test(pathname) || PROTECTED_TRACK_RE.test(pathname);
 }
 
-export async function middleware(request: NextRequest) {
-  const { response, user } = await updateSession(request);
+export function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  if (!needsAuth(pathname)) return NextResponse.next();
 
-  if (needsAuth(pathname) && !user) {
-    const locale = pathname.split('/')[1] || 'en';
-    const url = request.nextUrl.clone();
-    url.pathname = `/${locale}/login`;
-    url.searchParams.set('next', pathname);
-    return NextResponse.redirect(url);
-  }
-  return response;
+  const token = request.cookies.get(SESSION_COOKIE)?.value;
+  if (token === SESSION_TOKEN) return NextResponse.next();
+
+  const locale = pathname.split('/')[1] || 'en';
+  const url = request.nextUrl.clone();
+  url.pathname = `/${locale}/login`;
+  url.searchParams.set('next', pathname);
+  return NextResponse.redirect(url);
 }
 
 export const config = {
