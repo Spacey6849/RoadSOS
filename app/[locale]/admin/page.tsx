@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useLanguage } from '@/lib/i18n/LanguageProvider';
 import { createClient } from '@/lib/supabase/client';
 import { motion } from 'framer-motion';
+import { useIsMobile } from '@/lib/useIsMobile';
 
 // Shape of an incident row as it comes back from Supabase — enough fields to
 // make the CSV export useful for offline analysis.
@@ -32,6 +33,7 @@ function csvEscape(v: unknown): string {
 
 export default function AdminPage() {
   const { t } = useLanguage();
+  const isMobile = useIsMobile();
   const [elapsed, setElapsed] = useState(0);
   const [serviceCount, setServiceCount] = useState(0);
   const [incidentCount, setIncidentCount] = useState(0);
@@ -203,7 +205,7 @@ export default function AdminPage() {
   ];
 
   return (
-    <div style={{ maxWidth: 860, margin: '0 auto', padding: '32px 28px' }}>
+    <div style={{ maxWidth: 860, margin: '0 auto', padding: isMobile ? '20px 16px' : '32px 28px' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 40 }}>
         <div>
@@ -214,7 +216,7 @@ export default function AdminPage() {
       </div>
 
       {/* Hero numbers */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 32 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 32 }}>
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0 }}
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '20px 24px', position: 'relative', overflow: 'hidden' }}>
           <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 2, background: 'var(--red)' }} />
@@ -250,7 +252,7 @@ export default function AdminPage() {
       {/* Management */}
       <section style={{ marginBottom: 32 }}>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: 'var(--text-faint)', letterSpacing: '0.08em', marginBottom: 12 }}>Management</p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 12 }}>
           {[
             { href: '/en/admin/services', label: 'Emergency Services', desc: 'Add, edit, and manage registered services', meta: `${serviceCount} registered`, color: 'var(--blue)' },
             { href: '/en/dashboard', label: 'Incidents', desc: 'Live incident feed and response tracking', meta: `${incidentCount} active`, color: 'var(--red)' },

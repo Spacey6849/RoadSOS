@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { motion } from 'framer-motion';
+import { useIsMobile } from '@/lib/useIsMobile';
 
 interface CrashLog {
   id: string;
@@ -31,6 +32,7 @@ function outcomeBg(outcome: string): string {
 }
 
 export default function CrashLogsPage() {
+  const isMobile = useIsMobile();
   const [logs, setLogs] = useState<CrashLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [sortByGForce, setSortByGForce] = useState(false);
@@ -58,7 +60,7 @@ export default function CrashLogsPage() {
   const maxG = logs.length ? Math.max(...logs.map(l => l.g_force ?? 0)).toFixed(2) : '—';
 
   return (
-    <div style={{ padding: '28px 32px', maxWidth: 1100, margin: '0 auto' }}>
+    <div style={{ padding: isMobile ? '18px 14px' : '28px 32px', maxWidth: 1100, margin: '0 auto' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 28 }}>
         <div>
@@ -94,6 +96,40 @@ export default function CrashLogsPage() {
         </div>
       ) : logs.length === 0 ? (
         <p style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '60px 0', fontFamily: 'var(--font-mono)', fontSize: 12 }}>No crash logs found</p>
+      ) : isMobile ? (
+        // ── Mobile: card list (the 8-column table doesn't fit on phones)
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {displayed.map((log) => (
+            <motion.div
+              key={log.id}
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              style={{
+                background: outcomeBg(log.outcome),
+                border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px',
+                borderLeft: `3px solid ${outcomeColor(log.outcome)}`,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
+                  {new Date(log.detected_at).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', color: outcomeColor(log.outcome), fontWeight: 600 }}>
+                  {log.outcome || 'pending'}
+                </span>
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 6 }}>
+                {log.address || (log.latitude ? `${log.latitude.toFixed(4)}, ${log.longitude?.toFixed(4)}` : '— no location —')}
+              </p>
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                <span style={{ color: (log.g_force ?? 0) > 3 ? 'var(--red)' : (log.g_force ?? 0) > 1.5 ? 'var(--amber)' : 'var(--text-primary)', fontWeight: 600 }}>
+                  {log.g_force != null ? `${log.g_force.toFixed(2)}g` : '—g'}
+                </span>
+                <span style={{ color: 'var(--text-muted)' }}>jerk {log.jerk_gs != null ? log.jerk_gs.toFixed(1) : '—'}</span>
+                <span style={{ color: 'var(--text-muted)', textTransform: 'capitalize' }}>{log.mode || '—'} · {log.sensitivity || '—'}</span>
+              </div>
+            </motion.div>
+          ))}
+        </div>
       ) : (
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
           {/* Table header */}

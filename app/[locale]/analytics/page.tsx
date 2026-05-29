@@ -6,6 +6,7 @@ import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts';
+import { useIsMobile } from '@/lib/useIsMobile';
 
 interface Row { created_at: string; trigger_type: string }
 
@@ -41,6 +42,7 @@ function useContainerWidth(ref: React.RefObject<HTMLDivElement | null>) {
 }
 
 export default function AnalyticsPage() {
+  const isMobile = useIsMobile();
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const lineRef = useRef<HTMLDivElement>(null);
@@ -91,15 +93,15 @@ export default function AnalyticsPage() {
   }
 
   return (
-    <div style={{ padding: '28px 32px', maxWidth: 1100, margin: '0 auto' }}>
+    <div style={{ padding: isMobile ? '18px 14px' : '28px 32px', maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ marginBottom: 32 }}>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-faint)', marginBottom: 4 }}>Analytics</p>
         <h1 style={{ fontSize: 24, fontWeight: 300, color: 'var(--text-primary)', letterSpacing: -0.5 }}>Incident Analytics</h1>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{rows.length} total incidents</p>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 16 : 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
           {/* Daily line chart */}
           <div ref={lineRef} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '20px 20px 12px', overflow: 'hidden' }}>
             <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 16 }}>Incidents / Day (last 30 days)</p>
@@ -129,7 +131,7 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '280px 1fr', gap: 16 }}>
           {/* Donut */}
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 12, alignSelf: 'flex-start' }}>Trigger Type</p>

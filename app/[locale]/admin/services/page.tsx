@@ -5,6 +5,7 @@ import { useLanguage } from '@/lib/i18n/LanguageProvider';
 import { createClient } from '@/lib/supabase/client';
 import type { NearbyService, ServiceType } from '@/lib/types';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useIsMobile } from '@/lib/useIsMobile';
 
 const SERVICE_TYPES: ServiceType[] = ['hospital', 'trauma_centre', 'ambulance', 'police', 'towing', 'puncture', 'showroom'];
 
@@ -34,6 +35,7 @@ const MAX_PHONE = 24;
 
 export default function ServicesPage() {
   const { t } = useLanguage();
+  const isMobile = useIsMobile();
   const [services, setServices] = useState<NearbyService[]>([]);
   const [loading, setLoading] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -141,7 +143,7 @@ export default function ServicesPage() {
   };
 
   return (
-    <div style={{ padding: '24px 32px', position: 'relative' }}>
+    <div style={{ padding: isMobile ? '16px 14px' : '24px 32px', position: 'relative' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
@@ -179,27 +181,34 @@ export default function ServicesPage() {
             return (
               <div key={svc.id}
                 style={{
-                  display: 'flex', alignItems: 'center', padding: '0 20px', minHeight: 52,
+                  display: 'flex', alignItems: 'center',
+                  padding: isMobile ? '8px 12px' : '0 20px',
+                  minHeight: 52,
                   borderBottom: idx < services.length - 1 ? '0.5px solid var(--border)' : 'none',
                   background: 'var(--surface)', transition: 'background 0.12s',
                   borderLeft: `2px solid ${chipColor}`,
+                  gap: isMobile ? 8 : 0,
                 }}
                 onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface)'; }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, width: 110, flexShrink: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, width: isMobile ? 'auto' : 110, flexShrink: 0 }}>
                   <div style={{ width: 5, height: 5, borderRadius: '50%', background: chipColor, flexShrink: 0 }} />
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.06em', color: chipColor }}>{label}</span>
+                  {!isMobile && (
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.06em', color: chipColor }}>{label}</span>
+                  )}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{svc.name}</p>
-                  {svc.address && <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>{svc.address}</p>}
+                  {svc.address && <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: isMobile ? '100%' : 260 }}>{isMobile ? svc.primary_phone : svc.address}</p>}
                 </div>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginRight: 24, flexShrink: 0 }}>{svc.primary_phone}</span>
-                {svc.is_24x7 && (
+                {!isMobile && (
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginRight: 24, flexShrink: 0 }}>{svc.primary_phone}</span>
+                )}
+                {!isMobile && svc.is_24x7 && (
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--green)', border: '1px solid color-mix(in srgb, var(--green) 30%, transparent)', borderRadius: 3, padding: '1px 5px', marginRight: 16, flexShrink: 0 }}>24×7</span>
                 )}
-                <div style={{ display: 'flex', gap: 14, flexShrink: 0 }}>
+                <div style={{ display: 'flex', gap: isMobile ? 8 : 14, flexShrink: 0 }}>
                   <button onClick={() => startEdit(svc)} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer', transition: 'color 0.12s' }}
                     onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; }}
                     onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
@@ -224,9 +233,15 @@ export default function ServicesPage() {
               onClick={() => setPanelOpen(false)}
             />
             <motion.div
-              initial={{ x: 420 }} animate={{ x: 0 }} exit={{ x: 420 }}
+              initial={{ x: isMobile ? '100%' : 420 }} animate={{ x: 0 }} exit={{ x: isMobile ? '100%' : 420 }}
               transition={{ ease: [0.32, 0.72, 0, 1], duration: 0.3 }}
-              style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: 420, background: 'var(--surface)', borderLeft: '1px solid var(--border)', zIndex: 50, display: 'flex', flexDirection: 'column' }}
+              style={{
+                position: 'fixed', top: 0, right: 0, bottom: 0,
+                width: isMobile ? '100%' : 420,
+                background: 'var(--surface)',
+                borderLeft: isMobile ? 'none' : '1px solid var(--border)',
+                zIndex: 50, display: 'flex', flexDirection: 'column',
+              }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 24px', borderBottom: '1px solid var(--border)' }}>
                 <h2 style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-primary)' }}>{editingId ? 'Edit Service' : 'Add Service'}</h2>

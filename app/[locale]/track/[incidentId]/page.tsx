@@ -9,6 +9,7 @@ import { createClient } from '@/lib/supabase/client';
 import type { Responder } from '@/lib/types';
 import { ArrowLeft, Clock, AlertCircle, Copy, Check, Loader2, CheckCircle2, RotateCcw, QrCode } from 'lucide-react';
 import QRCode from 'react-qr-code';
+import { useIsMobile } from '@/lib/useIsMobile';
 
 const MapWithNoSSR = dynamic(() => import('@/components/ResponderMap'), { ssr: false });
 
@@ -41,6 +42,7 @@ export default function TrackPage() {
   const locale = (params?.locale as string) || 'en';
   const incidentId = params?.incidentId as string;
   const { t, language } = useLanguage();
+  const isMobile = useIsMobile();
   const [raw, setRaw] = useState<RawIncident | null>(null);
   const [responders, setResponders] = useState<Responder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -182,7 +184,7 @@ export default function TrackPage() {
   const shortId = incidentId?.slice(0, 8).toUpperCase() || '';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, padding: '24px 28px', maxWidth: 960, margin: '0 auto' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 14 : 20, padding: isMobile ? '14px 14px' : '24px 28px', maxWidth: 960, margin: '0 auto' }}>
       {/* Back */}
       <Link href={`/${locale}/dashboard`}
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: 12, fontFamily: 'var(--font-mono)', width: 'fit-content' }}
@@ -209,7 +211,7 @@ export default function TrackPage() {
             <div className={isActive ? 'animate-pulse-dot' : ''} style={{ width: 10, height: 10, borderRadius: '50%', background: statusColor, boxShadow: isActive ? '0 0 0 3px color-mix(in srgb, var(--red) 20%, transparent)' : 'none' }} />
           </div>
           <div style={{ flex: 1 }}>
-            <h1 style={{ fontSize: 28, fontWeight: 700, color: statusColor, letterSpacing: -0.5, lineHeight: 1, marginBottom: 8 }}>{statusLabel}</h1>
+            <h1 style={{ fontSize: isMobile ? 22 : 28, fontWeight: 700, color: statusColor, letterSpacing: -0.5, lineHeight: 1, marginBottom: 8 }}>{statusLabel}</h1>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--red)' }}>{shortId}</span>
               {raw.user_name && <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{raw.user_name}</span>}
@@ -311,7 +313,7 @@ export default function TrackPage() {
       </div>
 
       {/* Map */}
-      <div style={{ height: 420, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', position: 'relative', background: 'var(--bg)' }} className="map-scanline">
+      <div style={{ height: isMobile ? 300 : 420, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', position: 'relative', background: 'var(--bg)' }} className="map-scanline">
         <MapWithNoSSR responders={responders} center={mapCenter} />
         {!mapCenter && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
@@ -321,7 +323,7 @@ export default function TrackPage() {
       </div>
 
       {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '16px 20px', position: 'relative', overflow: 'hidden' }}>
           <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 2, background: 'var(--green)' }} />
           <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 4 }}>Responders</p>

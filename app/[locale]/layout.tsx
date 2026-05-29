@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { LanguageProvider, useLanguage } from '@/lib/i18n/LanguageProvider';
 import { LANGUAGES, type Language } from '@/lib/i18n/translations';
 import { ThemeProvider, useTheme } from '@/lib/ThemeProvider';
+import { useIsMobile } from '@/lib/useIsMobile';
 
 // Two-letter ISO code per language — `.slice(0,2)` gives "MA" for "Marathi"
 // (wrong; should be MR) so we map explicitly.
@@ -59,17 +60,23 @@ function ThemeToggle() {
 function LocaleContent({ children }: { children: React.ReactNode }) {
   const { language, setLanguage } = useLanguage();
   const [langOpen, setLangOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const pathname = usePathname();
   const locale = pathname?.split('/')[1] || 'en';
   const navItems = NAV_ITEMS(locale);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (langOpen && !(e.target as HTMLElement).closest('[data-lang]')) setLangOpen(false);
+      if (navOpen && !(e.target as HTMLElement).closest('[data-nav]')) setNavOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [langOpen]);
+  }, [langOpen, navOpen]);
+
+  // Auto-close mobile nav when route changes
+  useEffect(() => { setNavOpen(false); }, [pathname]);
 
   function isActive(href: string) {
     if (href.includes('/admin/services')) return pathname?.startsWith(href);
@@ -94,26 +101,67 @@ function LocaleContent({ children }: { children: React.ReactNode }) {
           </span>
         </Link>
 
-        {/* Nav links */}
-        <nav style={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
-          {navItems.map(item => (
-            <Link key={item.href} href={item.href} style={{
-              fontSize: 13, padding: '12px 12px',
-              color: isActive(item.href) ? 'var(--text-primary)' : 'var(--text-muted)',
-              borderBottom: isActive(item.href) ? '2px solid var(--red)' : '2px solid transparent',
-              textDecoration: 'none', transition: 'color 0.15s',
-            }}>
-              {item.label}
-            </Link>
-          ))}
-        </nav>
+        {/* Nav links — inline on desktop, hamburger dropdown on mobile.
+            All four labels in a 48px row are too cramped under ~640px. */}
+        {isMobile ? (
+          <div style={{ flex: 1, position: 'relative' }} data-nav>
+            <button
+              onClick={() => setNavOpen(o => !o)}
+              aria-label="Open navigation"
+              style={{
+                background: 'transparent', border: '1px solid var(--border-mid)',
+                borderRadius: 6, padding: '6px 10px',
+                color: 'var(--text-primary)', fontSize: 13, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}
+            >
+              ☰ {navItems.find(n => isActive(n.href))?.label ?? 'Menu'}
+            </button>
+            {navOpen && (
+              <div style={{
+                position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+                background: 'var(--surface)', border: '1px solid var(--border)',
+                borderRadius: 8, overflow: 'hidden', minWidth: 180, zIndex: 200,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+              }}>
+                {navItems.map(item => (
+                  <Link key={item.href} href={item.href} style={{
+                    display: 'block', padding: '12px 14px', fontSize: 13,
+                    color: isActive(item.href) ? 'var(--text-primary)' : 'var(--text-muted)',
+                    background: isActive(item.href) ? 'var(--bg-elevated)' : 'transparent',
+                    borderLeft: isActive(item.href) ? '2px solid var(--red)' : '2px solid transparent',
+                    textDecoration: 'none',
+                  }}>
+                    {item.label}
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <nav style={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
+            {navItems.map(item => (
+              <Link key={item.href} href={item.href} style={{
+                fontSize: 13, padding: '12px 12px',
+                color: isActive(item.href) ? 'var(--text-primary)' : 'var(--text-muted)',
+                borderBottom: isActive(item.href) ? '2px solid var(--red)' : '2px solid transparent',
+                textDecoration: 'none', transition: 'color 0.15s',
+              }}>
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+        )}
 
-        {/* Right: LIVE + theme toggle + language */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          {/* LIVE */}
+        {/* Right: LIVE + theme toggle + language. Hide LIVE label on mobile so
+            theme + language don't get pushed off-screen. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 14 }}>
+          {/* LIVE — dot only on mobile, dot+label on desktop */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)' }} className="animate-pulse-dot" />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: 0.5 }}>LIVE</span>
+            {!isMobile && (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: 0.5 }}>LIVE</span>
+            )}
           </div>
 
           {/* Theme toggle */}

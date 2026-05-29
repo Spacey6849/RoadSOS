@@ -13,6 +13,7 @@ import {
   type ResponsePayload, type Severity,
 } from '@/lib/dispatch';
 import { ConfirmCrashModal } from '@/components/ConfirmCrashModal';
+import { useIsMobile } from '@/lib/useIsMobile';
 
 const MapWithNoSSR = dynamic(() => import('@/components/ResponderMap'), {
   ssr: false,
@@ -450,18 +451,37 @@ export default function DashboardPage() {
     { key: 'all', label: 'All' }, { key: 'auto', label: 'Auto' }, { key: 'manual', label: 'Manual' },
   ];
 
+  const isMobile = useIsMobile();
+
   const mapCenter = useMemo<[number, number] | undefined>(() => {
     if (userLocation) return userLocation;
     const inc = incidents.find(i => i.location);
     if (inc?.location) return [inc.location.lat, inc.location.lng];
+    // Fall back to first crash with coords — without this the map sits at
+    // the India-wide default zoom and small markers in (e.g.) Goa are
+    // invisible until the user manually pans.
+    const crash = crashLogs.find(c => c.location);
+    if (crash?.location) return [crash.location.lat, crash.location.lng];
     return undefined;
-  }, [userLocation, incidents]);
+  }, [userLocation, incidents, crashLogs]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'row', height: '100%', overflow: 'hidden' }}>
+    <div style={{
+      display: 'flex',
+      flexDirection: isMobile ? 'column' : 'row',
+      height: '100%',
+      overflow: isMobile ? 'auto' : 'hidden',
+    }}>
 
       {/* ─── LEFT: Incident Feed ─── */}
-      <div style={{ width: 340, minWidth: 340, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+      <div style={{
+        width: isMobile ? '100%' : 340,
+        minWidth: isMobile ? 0 : 340,
+        maxHeight: isMobile ? '45vh' : undefined,
+        borderRight: isMobile ? 'none' : '1px solid var(--border)',
+        borderBottom: isMobile ? '1px solid var(--border)' : 'none',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative',
+      }}>
         {/* Red left-edge accent */}
         <div style={{
           position: 'absolute', left: 0, top: 0, bottom: 0, width: 2,
@@ -475,7 +495,14 @@ export default function DashboardPage() {
         <div style={{ padding: '16px 16px 12px 20px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
           <div style={{ marginBottom: 12 }}>
             <p style={{ fontFamily: 'var(--font-mono)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-muted)', marginBottom: 2 }}>Active Incidents</p>
-            <p style={{ fontFamily: 'var(--font-inter)', fontSize: 72, fontWeight: 300, color: activeCount > 0 ? 'var(--red)' : 'var(--text-primary)', lineHeight: 1, letterSpacing: -4 }}>
+            <p style={{
+              fontFamily: 'var(--font-inter)',
+              fontSize: isMobile ? 44 : 72,
+              fontWeight: 300,
+              color: activeCount > 0 ? 'var(--red)' : 'var(--text-primary)',
+              lineHeight: 1,
+              letterSpacing: isMobile ? -2 : -4,
+            }}>
               <AnimatedNumber value={activeCount} />
             </p>
           </div>
@@ -515,17 +542,35 @@ export default function DashboardPage() {
       </div>
 
       {/* ─── RIGHT: Stats + Map ─── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, padding: '10px 12px', flexShrink: 0 }}>
+      <div style={{
+        flex: 1,
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+        minWidth: 0,
+        minHeight: isMobile ? '55vh' : 0,
+      }}>
+        <div style={{
+          display: 'grid',
+          // 2x3 grid on phone (so all five stats fit) vs single row on desktop.
+          gridTemplateColumns: isMobile ? 'repeat(3, 1fr)' : 'repeat(5, 1fr)',
+          gap: 8,
+          padding: '10px 12px',
+          flexShrink: 0,
+        }}>
           <StatCard label="Active" value={activeCount} color="var(--red)" delay={0} />
-          <StatCard label="SOS Alerts" value={incidents.length} color="var(--blue)" delay={0.05} />
-          <StatCard label="Responders" value={responders.length} color="var(--green)" delay={0.1} />
-          <StatCard label="Resolved" value={`${incidents.length > 0 ? Math.round((resolvedCount / incidents.length) * 100) : 0}%`} color="var(--purple)" delay={0.15} />
+          <StatCard label="Crashes" value={unresolvedCrashes} color="var(--amber)" delay={0.05} />
+          <StatCard label="SOS Alerts" value={incidents.length} color="var(--blue)" delay={0.1} />
+          <StatCard label="Responders" value={responders.length} color="var(--green)" delay={0.15} />
+          <StatCard label="Resolved" value={`${incidents.length > 0 ? Math.round((resolvedCount / incidents.length) * 100) : 0}%`} color="var(--purple)" delay={0.2} />
         </div>
 
-        <div style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }} className="map-scanline">
-          {/* Map controls — top right */}
-          <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 1000, display: 'flex', gap: 6 }}>
+        <div style={{ flex: 1, minHeight: isMobile ? 320 : 0, position: 'relative', overflow: 'hidden' }} className="map-scanline">
+          {/* Map controls — top right (wrap on mobile so they don't run off-screen) */}
+          <div style={{
+            position: 'absolute', top: 10, right: 10, zIndex: 1000,
+            display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end',
+            maxWidth: 'calc(100% - 20px)',
+          }}>
             <button
               onClick={() => setShowHeat(h => !h)}
               style={{
