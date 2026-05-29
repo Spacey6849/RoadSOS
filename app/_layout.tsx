@@ -47,6 +47,7 @@ export default function RootLayout() {
           <Stack.Screen name="auth/sign-up" />
           <Stack.Screen name="stream/[id]" options={{ animation: 'slide_from_bottom' }} />
           <Stack.Screen name="ice" />
+          <Stack.Screen name="crash-history" options={{ animation: 'slide_from_bottom' }} />
         </Stack>
       </ErrorBoundary>
     </SafeAreaProvider>

@@ -133,6 +133,12 @@ export async function storeUserNameNative(name: string): Promise<void> {
   try { await RoadSoSCrashDetection.storeUserName(name); } catch {}
 }
 
+/** Persist the device id so native crash inserts carry it (own-crash filter). */
+export async function storeDeviceIdNative(deviceId: string): Promise<void> {
+  if (!isNativeCrashServiceAvailable) return;
+  try { await RoadSoSCrashDetection.storeDeviceId(deviceId); } catch {}
+}
+
 /**
  * Persist blood group + medical info so the native SMS template can include
  * them when SOS fires while JS is dead. Empty strings clear individual fields.

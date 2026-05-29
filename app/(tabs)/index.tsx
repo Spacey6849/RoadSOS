@@ -6,6 +6,7 @@ import {
   Activity,
   ArrowRight,
   Car,
+  Clock,
   HeartPulse,
   LucideIcon,
   MapPin,
@@ -43,11 +44,13 @@ import {
   simulateNativeCrash,
   stopNativeVibration,
   storeContactsNative,
+  storeDeviceIdNative,
   storeLocationNative,
   storeMedicalInfoNative,
   storeUserNameNative,
   subscribeNativeCrashEvent,
 } from '../../lib/native-crash-service';
+import { getDeviceId } from '../../lib/device-id';
 import { logCrashDetected, resolveCrashLog } from '../../lib/crash-logger';
 import { AppMode, CrashSensitivity, LocationData, NearbyService } from '../../types';
 
@@ -168,6 +171,8 @@ export default function HomeScreen() {
   // mount. The native crash service reads these from prefs at SOS time, so
   // they must be fresh by the moment of impact.
   useEffect(() => {
+    // Sync the device id so native crash inserts carry it (own-crash history).
+    getDeviceId().then((id) => storeDeviceIdNative(id).catch(() => {})).catch(() => {});
     getUserProfile().then((p) => {
       if (!p) return;
       if (p.name) storeUserNameNative(p.name).catch(() => {});
@@ -473,6 +478,12 @@ export default function HomeScreen() {
             </View>
             <StatusPill label={detectionOn ? (isDrive ? 'Drive' : 'Normal') : 'Off'} tone={crashTone} />
           </View>
+          <GhostButton
+            label="View crash history"
+            Icon={Clock}
+            onPress={() => router.push('/crash-history')}
+            style={{ minHeight: 40 }}
+          />
           {profile?.devMode ? (
             <PrimaryButton
               label="Simulate crash"

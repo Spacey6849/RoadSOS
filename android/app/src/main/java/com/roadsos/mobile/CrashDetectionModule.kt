@@ -158,6 +158,17 @@ class CrashDetectionModule(reactContext: ReactApplicationContext)
     }
 
     @ReactMethod
+    fun storeDeviceId(deviceId: String, promise: Promise) {
+        try {
+            reactApplicationContext.getSharedPreferences(CrashDetectionService.PREF_FILE, Context.MODE_PRIVATE)
+                .edit()
+                .putString(CrashDetectionService.PREF_DEVICE_ID, deviceId)
+                .apply()
+            promise.resolve(true)
+        } catch (e: Throwable) { promise.reject("ERR_STORE", e.message, e) }
+    }
+
+    @ReactMethod
     fun storeUserName(name: String, promise: Promise) {
         try {
             reactApplicationContext.getSharedPreferences(CrashDetectionService.PREF_FILE, Context.MODE_PRIVATE)

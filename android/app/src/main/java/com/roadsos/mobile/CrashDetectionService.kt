@@ -65,6 +65,7 @@ class CrashDetectionService : Service(), SensorEventListener {
         const val PREF_LOCATION_LNG    = "last_lng"
         const val PREF_LOCATION_ADDR   = "last_addr"
         const val PREF_USER_NAME       = "user_name"
+        const val PREF_DEVICE_ID       = "device_id"
         const val PREF_BLOOD_GROUP     = "blood_group"
         const val PREF_ALLERGIES       = "allergies"
         const val PREF_MEDICATIONS     = "medications"
@@ -451,9 +452,12 @@ class CrashDetectionService : Service(), SensorEventListener {
                 .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 .format(Date())
 
+            val deviceId = prefs.getString(PREF_DEVICE_ID, "") ?: ""
+
             JSONObject().apply {
                 put("mode", mode)
                 put("sensitivity", sensitivity)
+                if (deviceId.isNotBlank()) put("device_id", deviceId)
                 // Use the impact-time snapshot, not live sensor values, so the
                 // logged g_force reflects the actual crash spike.
                 put("g_force", impactGForce.toBigDecimal().toPlainString())
